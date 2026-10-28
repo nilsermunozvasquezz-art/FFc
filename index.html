@@ -646,17 +646,17 @@ function stepReferee(dt){
   u.lLeg.rotation.x=sw;u.rLeg.rotation.x=-sw;u.lArm.rotation.x=-sw*.8;u.rArm.rotation.x=sw*.8;
 }
 
-/* ============ camera (DLS broadcast, behind player's goal) ============ */
-const camState={x:0,y:30,z:-HALF_L-24};
+/* ============ camera (DLS side broadcast — goals left & right) ============ */
+const camState={x:HALF_W+37,y:26,z:0};
 function stepCamera(dt){
-  const tx=ball.position.x*0.35;
-  const tz=THREE.MathUtils.clamp(ball.position.z-30,-HALF_L-26,-4);
-  const ty=30;
-  camState.x+=(tx-camState.x)*Math.min(1,dt*2.2);
-  camState.z+=(tz-camState.z)*Math.min(1,dt*1.8);
+  const tx=HALF_W+37 - ball.position.x*0.14;
+  const tz=THREE.MathUtils.clamp(ball.position.z*0.7,-18,18);
+  const ty=26;
+  camState.x+=(tx-camState.x)*Math.min(1,dt*1.8);
+  camState.z+=(tz-camState.z)*Math.min(1,dt*2.2);
   camState.y+=(ty-camState.y)*Math.min(1,dt*1.8);
   camera.position.set(camState.x,camState.y,camState.z);
-  camera.lookAt(ball.position.x*0.3, 1.5, ball.position.z*0.4+4);
+  camera.lookAt(0, 1.4, ball.position.z*0.5);
 }
 
 /* ============ minimap ============ */
