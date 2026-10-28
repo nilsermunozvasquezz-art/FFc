@@ -160,13 +160,13 @@ scene.add(sun);
 /* ============ pitch ============ */
 function buildPitch(){
   // base grass with mowing stripes
-  const stripes = 14, sw = (HALF_W*2+8)/stripes;
+  const stripes = 16, sw = (HALF_L*2)/stripes;
   for(let i=0;i<stripes;i++){
     const m = new THREE.Mesh(
-      new THREE.PlaneGeometry(HALF_L*2+10, sw),
+      new THREE.PlaneGeometry(HALF_W*2+6, sw),
       new THREE.MeshStandardMaterial({color:i%2?0x2f8f3f:0x277a36, roughness:1}));
     m.rotation.x = -Math.PI/2;
-    m.position.set(0,0,-HALF_W-4+sw/2+i*sw);
+    m.position.set(0,0,-HALF_L+sw/2+i*sw);
     m.receiveShadow = true;
     scene.add(m);
   }
@@ -227,42 +227,14 @@ function buildGoal(zside){
 }
 buildGoal(1); buildGoal(-1);
 
-/* ============ stands + crowd ============ */
+/* ============ LED boards (no stands) ============ */
 function buildStands(){
-  const sMat=new THREE.MeshStandardMaterial({color:0x1b2740,roughness:.9});
-  function stand(w,d,x,z,ry){
-    const grp=new THREE.Group();
-    for(let t=0;t<5;t++){
-      const tier=new THREE.Mesh(new THREE.BoxGeometry(w,1.6,d/5),sMat);
-      tier.position.set(0,2+t*1.5,-(d/2)+ (d/5)*t + (d/10));
-      tier.receiveShadow=true; grp.add(tier);
-    }
-    // crowd specks
-    const cnt=Math.floor(w*5);
-    const geo=new THREE.BoxGeometry(.5,.7,.5);
-    const im=new THREE.InstancedMesh(geo,new THREE.MeshStandardMaterial({roughness:1,vertexColors:false}),cnt);
-    const dum=new THREE.Object3D(); const col=new THREE.Color();
-    for(let i=0;i<cnt;i++){
-      const row=i%5, cx=(Math.random()-.5)*w*.94;
-      dum.position.set(cx, 3+row*1.5, -(d/2)+(d/5)*row+(d/10));
-      dum.updateMatrix(); im.setMatrixAt(i,dum.matrix);
-      col.setHSL(Math.random(),.55,.55); im.setColorAt(i,col);
-    }
-    grp.add(im);
-    grp.position.set(x,0,z); grp.rotation.y=ry; scene.add(grp);
-  }
-  stand(HALF_W*2.4, 20, 0, -HALF_W-14, 0);
-  stand(HALF_W*2.4, 20, 0,  HALF_W+14, Math.PI);
-  stand(HALF_L*1.9, 18,  HALF_L+13, 0, -Math.PI/2);
-  stand(HALF_L*1.9, 18, -HALF_L-13, 0,  Math.PI/2);
-
-  // LED boards (side lines)
   const ledMat=new THREE.MeshStandardMaterial({color:0x101a30,emissive:0x1a3a7a,emissiveIntensity:.6});
-  [-1,1].forEach(s=>{
-    const b=new THREE.Mesh(new THREE.BoxGeometry(HALF_L*2,1.1,.3),ledMat);
+  [-1,1].forEach(s=>{                       // side-line boards (run along Z)
+    const b=new THREE.Mesh(new THREE.BoxGeometry(.3,1.1,HALF_L*2),ledMat);
     b.position.set(s*(HALF_W+1.2),.55,0); scene.add(b);
   });
-  [-1,1].forEach(s=>{
+  [-1,1].forEach(s=>{                       // behind-goal boards (run along X)
     const b=new THREE.Mesh(new THREE.BoxGeometry(HALF_W*2,1.1,.3),ledMat);
     b.position.set(0,.55,s*(HALF_L+1.2)); scene.add(b);
   });
@@ -460,8 +432,8 @@ function nearestToBall(team,excludeGK){
   return best;
 }
 function aimDir(p){
-  // joystick direction if pushed, else toward opponent goal
-  if(moveDir.lengthSq()>0.05) return new THREE.Vector3(moveDir.x,0,moveDir.y).normalize();
+  // joystick direction (side-camera mapped) if pushed, else toward opponent goal
+  if(moveDir.lengthSq()>0.05) return new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
   const gz = p.team===0?HALF_L+2:-HALF_L-2;
   return new THREE.Vector3(0,0,gz).sub(p.pos).setY(0).normalize();
 }
@@ -469,12 +441,17 @@ function doAction(which){
   if(!running||paused) return;
   const p=ctrlPlayer();
   if(teamHasBall){
-    // ATTACK: A disparo, B raso, C elevado — only if close to ball
-    if(p.pos.distanceTo(ball.position) > POSSESS+1.4) return;
-    if(p.kickCd>0) return;
-    const dir=aimDir(p); p.kickCd=0.3; owner=null;
+    // ATTACK: A disparo, B raso, C elevado. If not near ball, switch to the one who is.
+    if(p.pos.distanceTo(ball.position) > POSSESS+1.6){
+      const n=nearestToBall(0,false);
+      if(n && n.pos.distanceTo(ball.position) < POSSESS+1.6){ ctrl=players.indexOf(n); }
+      else return;
+    }
+    const pl=ctrlPlayer();
+    if(pl.kickCd>0) return;
+    const dir=aimDir(pl); pl.kickCd=0.3; owner=null;
     if(which==='A'){            // DISPARO fuerte -> toward goal
-      const gz=p.team===0?HALF_L:-HALF_L;
+      const gz=pl.team===0?HALF_L:-HALF_L;
       const target=new THREE.Vector3((Math.random()-.5)*GOAL_W*.7,0,gz).sub(ball.position).setY(0).normalize();
       ballVel.copy(target).multiplyScalar(34); ballVel.y=4.5;
     }else if(which==='B'){      // CHUTE raso (ground pass/shot)
@@ -499,10 +476,8 @@ function stepPlayer(p,dt){
 
   if(isCtrl){
     keyDir();
-    desired.set(moveDir.x,0,moveDir.y);
-    if(desired.lengthSq()<0.02 && !teamHasBall && owner && owner.team===1){
-      // auto-close toward ball a bit when defending idle
-    }
+    // side camera: screen-right = world -Z, screen-up = world -X
+    desired.set(moveDir.y, 0, -moveDir.x);
   }else if(p.gk){
     // goalkeeper: track ball laterally on own line, rush if close
     const gz=p.team===0?-HALF_L+1.5:HALF_L-1.5;
@@ -647,11 +622,11 @@ function stepReferee(dt){
 }
 
 /* ============ camera (DLS side broadcast — goals left & right) ============ */
-const camState={x:HALF_W+37,y:26,z:0};
+const camState={x:HALF_W+30,y:23,z:0};
 function stepCamera(dt){
-  const tx=HALF_W+37 - ball.position.x*0.14;
+  const tx=HALF_W+30 - ball.position.x*0.14;
   const tz=THREE.MathUtils.clamp(ball.position.z*0.7,-18,18);
-  const ty=26;
+  const ty=23;
   camState.x+=(tx-camState.x)*Math.min(1,dt*1.8);
   camState.z+=(tz-camState.z)*Math.min(1,dt*2.2);
   camState.y+=(ty-camState.y)*Math.min(1,dt*1.8);
