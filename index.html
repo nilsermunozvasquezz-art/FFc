@@ -1067,6 +1067,8 @@ function stepPlayer(p,dt){
       }
     }
     bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
+    // forwards hold the offside line when we attack, except on a rare timed run in behind
+    if(weHave && p.roleIdx>=3 && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
     if(throwTimer>0){
       // throw-in: the taker waits, teammates get open, opponents keep their distance
       if(owner===p) desired.set(0,0,0);
@@ -1082,8 +1084,9 @@ function stepPlayer(p,dt){
       if(p.team===1) acted=cpuTryKick(p);            // shoot/pass near the opponent box
       // pressure: nearest opponent distance -> pass sooner when closed down (one-touch feel)
       let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
-      const hold=(p.holdT||0), need = opD<3.2 ? 0.18 : (p.team===1?0.45:0.6);
-      if(!acted && hold>need) acted=aiTryPass(p);     // keep the ball moving / lay it off
+      const hold=(p.holdT||0), need = opD<3.2 ? 0.18 : 0.45;
+      // only the CPU (red) auto-passes; your blue players never kick on their own — you decide
+      if(!acted && p.team===1 && hold>need) acted=aiTryPass(p);
       if(acted) desired.set(0,0,0);
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
     }else if(!weHave && ballRank(p)<=1){
@@ -1100,6 +1103,7 @@ function stepPlayer(p,dt){
       // drift toward open space away from the nearest opponent
       let on=null,od=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff){const d=o.pos.distanceTo(p.pos);if(d<od){od=d;on=o;}}});
       if(on && od<5){ const aw=p.pos.clone().sub(on.pos).setY(0); if(aw.lengthSq()>0.01){aw.setLength(3); bxx+=aw.x; bzz+=aw.z;} }
+      if(p.roleIdx>=3 && (p.runGamble||0)<=0) bzz=keepOnsideZ(p.team,bzz);  // stay onside while supporting
       desired.set(bxx-p.pos.x,0,bzz-p.pos.z);
     }else{
       desired.set(bx-p.pos.x,0,bz-p.pos.z);
@@ -1140,6 +1144,9 @@ function stepPlayer(p,dt){
   if(p.kickCd>0)p.kickCd-=dt;
   if((p.dive||0)>0)p.dive-=dt;
   if((p.stealCd||0)>0)p.stealCd-=dt;
+  // rarely a forward gambles a run beyond the defence (random, not exaggerated)
+  if((p.runGamble||0)>0) p.runGamble-=dt;
+  else if(!p.gk && Math.random()<dt*0.045) p.runGamble=0.9;
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else p.holdT=0;  // AI possession timer
 
   // apply to mesh
@@ -1173,6 +1180,9 @@ function playerBallInteraction(dt){
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
     if(Math.hypot(dx,dz)<2.6 && ball.position.y<3.0) owner=p;   // wider, higher reach
   });
+  // DLS-style auto-switch: hand control to whichever blue outfielder has the ball, so your
+  // team only kicks when YOU press a button (the AI never passes/shoots for you)
+  if(owner && owner.team===0 && !owner.gk && owner!==ctrlPlayer()) ctrl=players.indexOf(owner);
   teamHasBall = !!(owner && owner.team===0);
   if(owner) lastTouch=owner.team;              // remember who touched it last (for throw-ins)
 
@@ -1230,6 +1240,16 @@ function isOffside(recv, team){
   const fs = players.filter(p=>p.team!==team && !p.sentOff).map(p=>p.pos.z*dir).sort((a,b)=>b-a);
   const fSecond = fs.length>=2 ? fs[1] : (fs[0]||0);
   return fRec > fSecond + 1.2;
+}
+// pull a forward's target back onto the offside line so players don't hold an offside
+// position; only in the opponent half (where offside applies)
+function keepOnsideZ(team, z){
+  const dir = team===0?1:-1;
+  const fs = players.filter(p=>p.team!==team && !p.sentOff).map(p=>p.pos.z*dir).sort((a,b)=>b-a);
+  const fSecond = fs.length>=2 ? fs[1] : (fs[0]||0);
+  const cap = fSecond + 0.6;                 // onside limit in forward-coordinate
+  if(cap>0.5 && z*dir>cap) return cap*dir;   // past the line in the opponent half -> hold the line
+  return z;
 }
 function offsideCall(attackTeam, pos){
   awardSetPiece(attackTeam===0?1:0, pos.x, pos.z, 'FUERA DE JUEGO');
