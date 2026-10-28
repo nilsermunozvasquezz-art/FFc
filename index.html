@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FFc · Fútbol 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a2e12; font-family: system-ui, sans-serif; user-select: none; }
+  #game { display: block; width: 100%; height: 100%; }
+
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 24px;
+    padding: 14px; pointer-events: none;
+    font-weight: 800; color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,.6);
+  }
+  #hud .score { font-size: 34px; letter-spacing: 1px; }
+  #hud .label { font-size: 12px; opacity: .8; text-align: center; }
+  #timer { font-size: 22px; align-self: center; background: rgba(0,0,0,.35); padding: 4px 12px; border-radius: 20px; }
+
+  #msg {
+    position: fixed; inset: 0; display: none; place-items: center;
+    background: rgba(0,0,0,.55); color: #fff; text-align: center; z-index: 10;
+  }
+  #msg .box { padding: 28px 34px; }
+  #msg h1 { font-size: 40px; margin-bottom: 8px; }
+  #msg p { font-size: 16px; opacity: .85; margin-bottom: 20px; }
+  #msg button {
+    font-size: 18px; font-weight: 800; padding: 12px 28px; border: none; border-radius: 12px;
+    background: #22c55e; color: #052e13; cursor: pointer;
+  }
+
+  /* Controls */
+  #controls { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  .btn {
+    position: absolute; pointer-events: auto;
+    width: 76px; height: 76px; border-radius: 50%;
+    display: grid; place-items: center; text-align: center;
+    font-weight: 800; font-size: 13px; color: #fff;
+    border: 2px solid rgba(255,255,255,.35);
+    background: rgba(0,0,0,.35); backdrop-filter: blur(4px);
+    touch-action: none;
+  }
+  .btn:active, .btn.on { transform: scale(.92); filter: brightness(1.4); }
+  #bKick  { right: 24px;  bottom: 118px; background: rgba(34,197,94,.45); }
+  #bSlide { right: 112px; bottom: 56px;  background: rgba(59,130,246,.45); }
+  #bRun   { right: 24px;  bottom: 30px;  background: rgba(234,179,8,.45); }
+
+  /* Joystick */
+  #stick { position: absolute; left: 30px; bottom: 36px; width: 130px; height: 130px;
+           border-radius: 50%; background: rgba(255,255,255,.12); border: 2px solid rgba(255,255,255,.25);
+           pointer-events: auto; touch-action: none; }
+  #knob  { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+           border-radius: 50%; background: rgba(255,255,255,.55); }
+
+  #hint { position: fixed; left: 50%; bottom: 8px; transform: translateX(-50%);
+          color: #fff; opacity: .5; font-size: 11px; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div><div class="score"><span id="sMe">0</span></div><div class="label">TÚ</div></div>
+  <div id="timer">02:00</div>
+  <div><div class="score"><span id="sCpu">0</span></div><div class="label">CPU</div></div>
+</div>
+
+<div id="controls">
+  <div id="stick"><div id="knob"></div></div>
+  <div class="btn" id="bRun">CORRER</div>
+  <div class="btn" id="bSlide">BARRER</div>
+  <div class="btn" id="bKick">PATEAR</div>
+</div>
+
+<div id="msg"><div class="box"><h1 id="msgT">⚽ FFc</h1><p id="msgP">Mete más goles que la CPU</p><button id="btnStart">JUGAR</button></div></div>
+
+<div id="hint">Mover: joystick / WASD · Patear: Espacio · Barrer: Shift · Correr: mantener</div>
+
+<script src="libs/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+  const THREE = window.THREE;
+
+  // ---------- Field dimensions ----------
+  const FIELD_W = 44;   // X (ancho, de banda a banda)
+  const FIELD_L = 64;   // Z (largo, de arco a arco)
+  const WALL = 1;
+  const GOAL_W = 14;    // ancho de la portería
+  const HALF_W = FIELD_W / 2, HALF_L = FIELD_L / 2;
+
+  // ---------- Renderer / Scene ----------
+  const canvas = document.getElementById("game");
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a2e12);
+  scene.fog = new THREE.Fog(0x0a2e12, 60, 130);
+
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 500);
+
+  // ---------- Lights ----------
+  scene.add(new THREE.HemisphereLight(0xbfefff, 0x16351c, 0.9));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+  sun.position.set(-20, 45, 20);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const d = 55;
+  sun.shadow.camera.left = -d; sun.shadow.camera.right = d;
+  sun.shadow.camera.top = d; sun.shadow.camera.bottom = -d;
+  sun.shadow.camera.far = 120;
+  scene.add(sun);
+
+  // ---------- Field ----------
+  function buildField() {
+    const grp = new THREE.Group();
+
+    // césped con franjas
+    for (let i = 0; i < 10; i++) {
+      const stripe = new THREE.Mesh(
+        new THREE.PlaneGeometry(FIELD_W, FIELD_L / 10),
+        new THREE.MeshStandardMaterial({ color: i % 2 ? 0x1f7a37 : 0x1a6e30, roughness: 1 })
+      );
+      stripe.rotation.x = -Math.PI / 2;
+      stripe.position.z = -HALF_L + (i + 0.5) * (FIELD_L / 10);
+      stripe.receiveShadow = true;
+      grp.add(stripe);
+    }
+
+    // líneas blancas
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    function line(w, l, x, z) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, l), lineMat);
+      m.rotation.x = -Math.PI / 2; m.position.set(x, 0.02, z); grp.add(m);
+    }
+    const t = 0.25;
+    line(FIELD_W, t, 0, 0);                       // media
+    line(t, FIELD_L, -HALF_W, 0); line(t, FIELD_L, HALF_W, 0); // bandas
+    line(FIELD_W, t, 0, -HALF_L); line(FIELD_W, t, 0, HALF_L); // fondos
+    const ring = new THREE.Mesh(new THREE.RingGeometry(5.6, 5.85, 48), lineMat);
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02; grp.add(ring);
+    // áreas
+    line(24, t, 0, -HALF_L + 8); line(t, 16, -12, -HALF_L + 4); line(t, 16, 12, -HALF_L + 4);
+    line(24, t, 0, HALF_L - 8); line(t, 16, -12, HALF_L - 4); line(t, 16, 12, HALF_L - 4);
+
+    // bordes
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x0c3b18, roughness: 1 });
+    function wall(w, h, dp, x, z) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, dp), wallMat);
+      m.position.set(x, h / 2, z); m.castShadow = true; m.receiveShadow = true; grp.add(m);
+    }
+    const sideSeg = (FIELD_L - GOAL_W) / 2;
+    wall(WALL, 2, FIELD_L + WALL * 2, -HALF_W - WALL / 2, 0);
+    wall(WALL, 2, FIELD_L + WALL * 2,  HALF_W + WALL / 2, 0);
+    // fondos con hueco de portería
+    wall((FIELD_W - GOAL_W) / 2, 2, WALL, -(GOAL_W / 2 + (FIELD_W - GOAL_W) / 4), -HALF_L - WALL / 2);
+    wall((FIELD_W - GOAL_W) / 2, 2, WALL,  (GOAL_W / 2 + (FIELD_W - GOAL_W) / 4), -HALF_L - WALL / 2);
+    wall((FIELD_W - GOAL_W) / 2, 2, WALL, -(GOAL_W / 2 + (FIELD_W - GOAL_W) / 4),  HALF_L + WALL / 2);
+    wall((FIELD_W - GOAL_W) / 2, 2, WALL,  (GOAL_W / 2 + (FIELD_W - GOAL_W) / 4),  HALF_L + WALL / 2);
+
+    // porterías (marcos)
+    function goalFrame(z) {
+      const mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+      const post = new THREE.BoxGeometry(0.3, 3, 0.3);
+      const dir = z < 0 ? -1 : 1;
+      [-GOAL_W / 2, GOAL_W / 2].forEach(x => {
+        const p = new THREE.Mesh(post, mat); p.position.set(x, 1.5, z + dir * 0.3); p.castShadow = true; grp.add(p);
+      });
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(GOAL_W + 0.3, 0.3, 0.3), mat);
+      bar.position.set(0, 3, z + dir * 0.3); grp.add(bar);
+      // red
+      const net = new THREE.Mesh(new THREE.PlaneGeometry(GOAL_W, 3),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, side: THREE.DoubleSide }));
+      net.position.set(0, 1.5, z + dir * 2.2); grp.add(net);
+    }
+    goalFrame(-HALF_L); goalFrame(HALF_L);
+
+    scene.add(grp);
+  }
+  buildField();
+
+  // ---------- Players & Ball ----------
+  function makePlayer(color) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.7, 1.4, 4, 10),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.6 }));
+    body.position.y = 1.4; body.castShadow = true; g.add(body);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0xf0c08a }));
+    head.position.y = 2.7; head.castShadow = true; g.add(head);
+    // indicador de dirección
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.6, 8),
+      new THREE.MeshStandardMaterial({ color: 0x111111 }));
+    nose.rotation.x = Math.PI / 2; nose.position.set(0, 1.4, 0.8); g.add(nose);
+    scene.add(g);
+    g.userData.radius = 0.9;
+    return g;
+  }
+
+  const me = makePlayer(0x2563eb);   // azul = tú
+  const cpu = makePlayer(0xdc2626);  // rojo = CPU
+
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.6, 24, 24),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 }));
+  ball.castShadow = true; ball.position.y = 0.6; scene.add(ball);
+  const ballVel = new THREE.Vector3();
+  const BALL_R = 0.6;
+
+  // ---------- State ----------
+  const state = {
+    running: false,
+    scoreMe: 0, scoreCpu: 0,
+    time: 120,
+    meHeading: 0,
+    slideTimer: 0,   // segundos restantes de barrida
+    slideCd: 0,
+  };
+  const keys = {};
+  const joy = { x: 0, y: 0, active: false };
+  let runHeld = false;
+
+  function resetPositions(kickToCpu) {
+    me.position.set(0, 0, 8);
+    cpu.position.set(0, 0, -8);
+    ball.position.set(0, 0.6, 0);
+    ballVel.set(0, 0, 0);
+    state.meHeading = Math.PI; // mirando hacia el arco rival (-Z)
+    me.rotation.y = state.meHeading;
+    cpu.rotation.y = 0;
+  }
+
+  // ---------- Input ----------
+  addEventListener("keydown", e => {
+    keys[e.code] = true;
+    if (e.code === "Space") { e.preventDefault(); doKick(); }
+    if (e.code === "ShiftLeft" || e.code === "ShiftRight") doSlide();
+  });
+  addEventListener("keyup", e => { keys[e.code] = false; });
+
+  // Joystick
+  const stick = document.getElementById("stick"), knob = document.getElementById("knob");
+  let stickId = null;
+  function stickStart(e) { stickId = e.changedTouches ? e.changedTouches[0].identifier : "m"; joy.active = true; stickMove(e); }
+  function stickMove(e) {
+    const touch = getTouch(e, stickId); if (!touch) return;
+    const r = stick.getBoundingClientRect();
+    let dx = touch.clientX - (r.left + r.width / 2);
+    let dy = touch.clientY - (r.top + r.height / 2);
+    const max = r.width / 2, len = Math.hypot(dx, dy);
+    if (len > max) { dx = dx / len * max; dy = dy / len * max; }
+    knob.style.transform = `translate(${dx}px,${dy}px)`;
+    joy.x = dx / max; joy.y = dy / max;
+  }
+  function stickEnd() { stickId = null; joy.active = false; joy.x = joy.y = 0; knob.style.transform = "translate(0,0)"; }
+  function getTouch(e, id) {
+    if (!e.changedTouches) return e;
+    for (const t of e.changedTouches) if (t.identifier === id) return t;
+    return null;
+  }
+  stick.addEventListener("touchstart", e => { e.preventDefault(); stickStart(e); }, { passive: false });
+  stick.addEventListener("touchmove", e => { e.preventDefault(); stickMove(e); }, { passive: false });
+  stick.addEventListener("touchend", e => { e.preventDefault(); stickEnd(); }, { passive: false });
+  stick.addEventListener("mousedown", stickStart);
+  addEventListener("mousemove", e => { if (joy.active && stickId === "m") stickMove(e); });
+  addEventListener("mouseup", () => { if (stickId === "m") stickEnd(); });
+
+  // Botones
+  function bind(id, onStart, onEnd) {
+    const el = document.getElementById(id);
+    const start = e => { e.preventDefault(); el.classList.add("on"); onStart && onStart(); };
+    const end = e => { e.preventDefault(); el.classList.remove("on"); onEnd && onEnd(); };
+    el.addEventListener("touchstart", start, { passive: false });
+    el.addEventListener("touchend", end, { passive: false });
+    el.addEventListener("mousedown", start);
+    el.addEventListener("mouseup", end);
+    el.addEventListener("mouseleave", end);
+  }
+  bind("bKick", doKick);
+  bind("bSlide", doSlide);
+  bind("bRun", () => runHeld = true, () => runHeld = false);
+
+  // ---------- Actions ----------
+  function distToBall(p) { return Math.hypot(ball.position.x - p.position.x, ball.position.z - p.position.z); }
+
+  function doKick() {
+    if (!state.running) return;
+    if (distToBall(me) > 2.6) return;
+    const dir = new THREE.Vector3(Math.sin(state.meHeading), 0, Math.cos(state.meHeading));
+    const power = 26;
+    ballVel.x = dir.x * power; ballVel.z = dir.z * power; ballVel.y = 7;
+  }
+
+  function doSlide() {
+    if (!state.running || state.slideCd > 0) return;
+    state.slideTimer = 0.45;  // duración del impulso
+    state.slideCd = 1.2;      // enfriamiento
+  }
+
+  // ---------- Physics helpers ----------
+  function clampToField(obj, r) {
+    const lx = HALF_W - r, lz = HALF_L - r;
+    if (obj.position.x < -lx) obj.position.x = -lx;
+    if (obj.position.x >  lx) obj.position.x =  lx;
+    if (obj.position.z < -lz) obj.position.z = -lz;
+    if (obj.position.z >  lz) obj.position.z =  lz;
+  }
+
+  function playerBall(p, isMe) {
+    const dx = ball.position.x - p.position.x, dz = ball.position.z - p.position.z;
+    const dist = Math.hypot(dx, dz);
+    const minD = p.userData.radius + BALL_R;
+    if (dist < minD && dist > 0.0001) {
+      const nx = dx / dist, nz = dz / dist;
+      // empuje posicional
+      ball.position.x = p.position.x + nx * minD;
+      ball.position.z = p.position.z + nz * minD;
+      // transfiere algo de velocidad (driblar) o fuerte si barre
+      const push = (isMe && state.slideTimer > 0) ? 22 : 9;
+      ballVel.x += nx * push * 0.3; ballVel.z += nz * push * 0.3;
+      if (isMe && state.slideTimer > 0) { ballVel.x = nx * push; ballVel.z = nz * push; }
+    }
+  }
+
+  function playersCollide() {
+    const dx = cpu.position.x - me.position.x, dz = cpu.position.z - me.position.z;
+    const dist = Math.hypot(dx, dz), minD = me.userData.radius + cpu.userData.radius;
+    if (dist < minD && dist > 0.0001) {
+      const nx = dx / dist, nz = dz / dist, overlap = (minD - dist) / 2;
+      me.position.x -= nx * overlap; me.position.z -= nz * overlap;
+      cpu.position.x += nx * overlap; cpu.position.z += nz * overlap;
+    }
+  }
+
+  // ---------- Goals ----------
+  function checkGoal() {
+    if (Math.abs(ball.position.x) > GOAL_W / 2) return;
+    if (ball.position.z < -HALF_L + 0.3) { state.scoreMe++; onGoal("¡GOOOL!"); }       // arco CPU (-Z)
+    else if (ball.position.z > HALF_L - 0.3) { state.scoreCpu++; onGoal("Gol de la CPU"); } // arco tuyo (+Z)
+  }
+  function onGoal(text) {
+    document.getElementById("sMe").textContent = state.scoreMe;
+    document.getElementById("sCpu").textContent = state.scoreCpu;
+    state.running = false;
+    flash(text, "Saque desde el centro");
+    setTimeout(() => {
+      resetPositions();
+      hideMsg();
+      state.running = true;
+    }, 1400);
+  }
+
+  // ---------- CPU AI ----------
+  function updateCpu(dt) {
+    const toBallX = ball.position.x - cpu.position.x;
+    const toBallZ = ball.position.z - cpu.position.z;
+    const dBall = Math.hypot(toBallX, toBallZ);
+
+    // Si el balón está en su mitad defensiva o cerca, va por él; si no, se posiciona
+    let tx, tz;
+    const defend = ball.position.z < 4;
+    if (defend || dBall < 14) {
+      tx = ball.position.x; tz = ball.position.z;
+    } else {
+      tx = ball.position.x * 0.5; tz = -6; // retrocede a defender
+    }
+    const dirX = tx - cpu.position.x, dirZ = tz - cpu.position.z;
+    const len = Math.hypot(dirX, dirZ) || 1;
+    const spd = 10 * dt;
+    cpu.position.x += (dirX / len) * spd;
+    cpu.position.z += (dirZ / len) * spd;
+    cpu.rotation.y = Math.atan2(dirX, dirZ);
+
+    // patea si está cerca del balón: hacia tu arco (+Z)
+    if (dBall < 2.4) {
+      const aimX = (0 - ball.position.x) * 0.15; // apunta al centro del arco
+      const v = new THREE.Vector3(aimX, 0, 1).normalize();
+      ballVel.x = v.x * 22; ballVel.z = v.z * 22; ballVel.y = 6;
+    }
+    clampToField(cpu, cpu.userData.radius);
+  }
+
+  // ---------- Main loop ----------
+  let last = performance.now();
+  function tick(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+
+    if (state.running) {
+      // --- movimiento jugador ---
+      let mx = 0, mz = 0;
+      if (keys["KeyW"] || keys["ArrowUp"]) mz -= 1;
+      if (keys["KeyS"] || keys["ArrowDown"]) mz += 1;
+      if (keys["KeyA"] || keys["ArrowLeft"]) mx -= 1;
+      if (keys["KeyD"] || keys["ArrowRight"]) mx += 1;
+      if (joy.active) { mx += joy.x; mz += joy.y; }
+      const mlen = Math.hypot(mx, mz);
+
+      state.slideCd = Math.max(0, state.slideCd - dt);
+      let speed = (runHeld || keys["ShiftLeft"] ? 13 : 9);
+      if (state.slideTimer > 0) { state.slideTimer -= dt; speed = 18; } // barrida: impulso
+
+      if (mlen > 0.15) {
+        mx /= mlen; mz /= mlen;
+        me.position.x += mx * speed * dt;
+        me.position.z += mz * speed * dt;
+        state.meHeading = Math.atan2(mx, mz);
+        me.rotation.y = state.meHeading;
+      } else if (state.slideTimer > 0) {
+        // deslizamiento hacia donde mira
+        me.position.x += Math.sin(state.meHeading) * speed * dt;
+        me.position.z += Math.cos(state.meHeading) * speed * dt;
+      }
+      // inclina al barrer
+      me.rotation.x = state.slideTimer > 0 ? -0.8 : 0;
+
+      clampToField(me, me.userData.radius);
+
+      // --- CPU ---
+      updateCpu(dt);
+      playersCollide();
+
+      // --- balón ---
+      // gravedad + rebote
+      ballVel.y -= 30 * dt;
+      ball.position.addScaledVector(ballVel, dt);
+      if (ball.position.y < BALL_R) { ball.position.y = BALL_R; ballVel.y *= -0.45; if (Math.abs(ballVel.y) < 1) ballVel.y = 0; }
+      // fricción
+      const f = Math.pow(0.12, dt);
+      ballVel.x *= f; ballVel.z *= f;
+      // rota el balón
+      ball.rotation.x += ballVel.z * dt * 0.5;
+      ball.rotation.z -= ballVel.x * dt * 0.5;
+
+      // paredes (rebote), dejando pasar por el hueco de portería
+      const inGoalMouth = Math.abs(ball.position.x) < GOAL_W / 2;
+      if (ball.position.x < -HALF_W + BALL_R) { ball.position.x = -HALF_W + BALL_R; ballVel.x *= -0.6; }
+      if (ball.position.x >  HALF_W - BALL_R) { ball.position.x =  HALF_W - BALL_R; ballVel.x *= -0.6; }
+      if (!inGoalMouth) {
+        if (ball.position.z < -HALF_L + BALL_R) { ball.position.z = -HALF_L + BALL_R; ballVel.z *= -0.6; }
+        if (ball.position.z >  HALF_L - BALL_R) { ball.position.z =  HALF_L - BALL_R; ballVel.z *= -0.6; }
+      }
+
+      playerBall(me, true);
+      playerBall(cpu, false);
+      checkGoal();
+
+      // --- reloj ---
+      state.time -= dt;
+      if (state.time <= 0) { state.time = 0; endMatch(); }
+      updateTimer();
+    }
+
+    // cámara sigue por detrás del jugador (3/4)
+    const camDist = 20, camHeight = 15;
+    const behind = state.meHeading + Math.PI;
+    const targetCamX = me.position.x + Math.sin(behind) * camDist * 0.5;
+    const targetCamZ = me.position.z + Math.cos(behind) * camDist;
+    camera.position.x += (targetCamX - camera.position.x) * 0.08;
+    camera.position.z += (targetCamZ - camera.position.z) * 0.08;
+    camera.position.y += (camHeight - camera.position.y) * 0.08;
+    camera.lookAt(me.position.x * 0.6, 1, me.position.z * 0.6 - 4);
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+
+  function updateTimer() {
+    const m = Math.floor(state.time / 60), s = Math.floor(state.time % 60);
+    document.getElementById("timer").textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  // ---------- Messages ----------
+  const msg = document.getElementById("msg");
+  function flash(title, sub) {
+    document.getElementById("msgT").textContent = title;
+    document.getElementById("msgP").textContent = sub || "";
+    document.getElementById("btnStart").style.display = "none";
+    msg.style.display = "grid";
+  }
+  function hideMsg() { msg.style.display = "none"; }
+  function showStart(title, sub) {
+    document.getElementById("msgT").textContent = title;
+    document.getElementById("msgP").textContent = sub;
+    document.getElementById("btnStart").style.display = "inline-block";
+    msg.style.display = "grid";
+  }
+
+  function endMatch() {
+    state.running = false;
+    let t = state.scoreMe > state.scoreCpu ? "🏆 ¡Ganaste!" :
+            state.scoreMe < state.scoreCpu ? "😖 Perdiste" : "🤝 Empate";
+    showStart(t, `Marcador ${state.scoreMe} - ${state.scoreCpu}. ¿Otra?`);
+    document.getElementById("btnStart").textContent = "JUGAR DE NUEVO";
+  }
+
+  function startMatch() {
+    state.scoreMe = 0; state.scoreCpu = 0; state.time = 120;
+    document.getElementById("sMe").textContent = 0;
+    document.getElementById("sCpu").textContent = 0;
+    resetPositions();
+    updateTimer();
+    hideMsg();
+    state.running = true;
+  }
+  document.getElementById("btnStart").addEventListener("click", startMatch);
+
+  // ---------- Resize ----------
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // init
+  resetPositions();
+  camera.position.set(0, 15, 28);
+  camera.lookAt(0, 1, 0);
+  showStart("⚽ FFc · Fútbol 3D", "Mete más goles que la CPU en 2 min");
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
