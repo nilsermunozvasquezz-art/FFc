@@ -202,38 +202,51 @@ function applyGfx(q){
 applyGfx(gfx);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a2340);
-scene.fog = new THREE.Fog(0x0a2340, 120, 230);
+// daytime sky gradient background
+(function(){
+  const c=document.createElement('canvas'); c.width=4; c.height=256;
+  const g=c.getContext('2d'); const grd=g.createLinearGradient(0,0,0,256);
+  grd.addColorStop(0,'#2e6fb0'); grd.addColorStop(0.45,'#6fa8dc');
+  grd.addColorStop(0.75,'#bcd8f0'); grd.addColorStop(1,'#dcecf7');
+  g.fillStyle=grd; g.fillRect(0,0,4,256);
+  const tex=new THREE.CanvasTexture(c);
+  if('colorSpace' in tex) tex.colorSpace=THREE.SRGBColorSpace;
+  scene.background=tex;
+})();
+scene.fog = new THREE.Fog(0xcfe2f2, 170, 340);
 
 const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.5, 400);
 
-const amb = new THREE.HemisphereLight(0xbfd8ff, 0x2a5a2f, 0.95);
+const amb = new THREE.HemisphereLight(0xdcecff, 0x4a7a44, 1.25);
 scene.add(amb);
-const sun = new THREE.DirectionalLight(0xffffff, 1.15);
-sun.position.set(30,70,20);
+const sun = new THREE.DirectionalLight(0xfff6e6, 1.75);
+sun.position.set(38,78,26);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048,2048);
+sun.shadow.bias=-0.0004; sun.shadow.radius=3;
 const sc = sun.shadow.camera;
-sc.near=10; sc.far=200; sc.left=-70; sc.right=70; sc.top=70; sc.bottom=-70;
+sc.near=10; sc.far=240; sc.left=-80; sc.right=80; sc.top=80; sc.bottom=-80;
 scene.add(sun);
+const fill = new THREE.DirectionalLight(0xbcd4ff, 0.35);   // soft sky fill from the opposite side
+fill.position.set(-30,40,-20); scene.add(fill);
 
 /* ============ pitch ============ */
 function buildPitch(){
-  // base grass with mowing stripes
-  const stripes = 16, sw = (HALF_L*2)/stripes;
+  // base grass with mowing stripes (brighter, richer greens)
+  const stripes = 18, sw = (HALF_L*2)/stripes;
   for(let i=0;i<stripes;i++){
     const m = new THREE.Mesh(
-      new THREE.PlaneGeometry(HALF_W*2+6, sw),
-      new THREE.MeshStandardMaterial({color:i%2?0x2f8f3f:0x277a36, roughness:1}));
+      new THREE.PlaneGeometry(HALF_W*2+4, sw),
+      new THREE.MeshStandardMaterial({color:i%2?0x4bb85e:0x3da551, roughness:.95}));
     m.rotation.x = -Math.PI/2;
     m.position.set(0,0,-HALF_L+sw/2+i*sw);
     m.receiveShadow = true;
     scene.add(m);
   }
-  // surrounding dark apron
-  const ap = new THREE.Mesh(new THREE.PlaneGeometry(260,200),
-    new THREE.MeshStandardMaterial({color:0x123018,roughness:1}));
-  ap.rotation.x=-Math.PI/2; ap.position.y=-0.02; scene.add(ap);
+  // grass surround (keeps a green field beyond the lines, no boards)
+  const ap = new THREE.Mesh(new THREE.PlaneGeometry(320,260),
+    new THREE.MeshStandardMaterial({color:0x2f8742,roughness:1}));
+  ap.rotation.x=-Math.PI/2; ap.position.y=-0.02; ap.receiveShadow=true; scene.add(ap);
 
   // lines
   const lineMat = new THREE.MeshBasicMaterial({color:0xf4f8ff});
@@ -318,24 +331,12 @@ function buildGoal(zside){
 }
 buildGoal(1); buildGoal(-1);
 
-/* ============ LED boards (no stands) ============ */
-function buildStands(){
-  const ledMat=new THREE.MeshStandardMaterial({color:0x101a30,emissive:0x1a3a7a,emissiveIntensity:.6});
-  [-1,1].forEach(s=>{                       // side-line boards (run along Z)
-    const b=new THREE.Mesh(new THREE.BoxGeometry(.3,1.1,HALF_L*2),ledMat);
-    b.position.set(s*(HALF_W+1.2),.55,0); scene.add(b);
-  });
-  [-1,1].forEach(s=>{                       // behind-goal boards (run along X, clear of nets)
-    const b=new THREE.Mesh(new THREE.BoxGeometry(HALF_W*2,1.1,.3),ledMat);
-    b.position.set(0,.55,s*(HALF_L+3.2)); scene.add(b);
-  });
-}
-buildStands();
+/* no advertising boards — just the pitch and its boundary lines */
 
 /* ============ players ============ */
 function makePlayer(shirt, shorts, skin){
   const g=new THREE.Group();
-  const M=(c,r)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.6:r});
+  const M=(c,r)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.5:r,metalness:.05});
   const torso=new THREE.Mesh(new THREE.CylinderGeometry(.42,.48,1.0,12),M(shirt));
   torso.position.y=1.5; torso.castShadow=true; g.add(torso);
   const hips=new THREE.Mesh(new THREE.CylinderGeometry(.42,.38,.45,12),M(shorts));
@@ -460,8 +461,8 @@ function stepLinesmen(dt){
 }
 
 /* ball */
-const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,18,18),
-  new THREE.MeshStandardMaterial({color:0xffffff,roughness:.35}));
+const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,24,24),
+  new THREE.MeshStandardMaterial({color:0xffffff,roughness:.28,metalness:.05}));
 ball.castShadow=true; scene.add(ball);
 // simple pentagon dots
 for(let i=0;i<6;i++){
@@ -1164,11 +1165,23 @@ function offsideCall(attackTeam, pos){
   const defend = attackTeam===0?1:0;
   throwTeam=defend; throwTimer=1.9; setPieceLabel='FUERA DE JUEGO';
   const z=THREE.MathUtils.clamp(pos.z,-HALF_L+5,HALF_L-5), x=THREE.MathUtils.clamp(pos.x,-HALF_W+4,HALF_W-4);
-  ball.position.set(x,BALL_R,z); ballVel.set(0,0,0);
   let rec=null,rd=1e9;
-  players.forEach(p=>{if(p.team!==defend||p.sentOff)return;
-    const d=p.pos.distanceTo(ball.position); if(d<rd){rd=d;rec=p;}});
-  if(rec){ owner=rec; rec.holdT=0; rec.kickCd=0; if(defend===0) ctrl=players.indexOf(rec); }
+  players.forEach(p=>{if(p.team!==defend||p.gk||p.sentOff)return;
+    const d=p.pos.distanceTo(new THREE.Vector3(x,0,z)); if(d<rd){rd=d;rec=p;}});
+  if(rec){
+    rec.pos.set(x,0,z); rec.vel.set(0,0,0); rec.heading=defend===0?0:Math.PI;
+    const fwd=new THREE.Vector3(Math.sin(rec.heading),0,Math.cos(rec.heading));
+    ball.position.set(rec.pos.x+fwd.x*0.6,BALL_R,rec.pos.z+fwd.z*0.6); ballVel.set(0,0,0);
+    owner=rec; rec.holdT=0; rec.kickCd=0;
+    if(defend===0) ctrl=players.indexOf(rec);       // you take your free kick with PASE
+  } else { ball.position.set(x,BALL_R,z); ballVel.set(0,0,0); }
+  // clear any opponent standing on the free-kick ball
+  players.forEach(p=>{ if(p.team===defend||p.gk||p.sentOff) return;
+    if(p.pos.distanceTo(ball.position)<4){
+      const away=p.pos.clone().sub(ball.position).setY(0);
+      if(away.lengthSq()<0.01) away.set(1,0,0);
+      away.setLength(4.5); p.pos.copy(ball.position).add(away); p.pos.y=0; p.vel.set(0,0,0);
+    }});
   // raise the nearer linesman's flag
   let ls=linesmen[0]; linesmen.forEach(l=>{ if(Math.abs(l.side*HALF_W - x) < Math.abs(ls.side*HALF_W - x)) ls=l; });
   ls.flagUp=2.2;
