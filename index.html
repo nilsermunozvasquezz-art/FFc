@@ -387,12 +387,21 @@ function spawnTeam(t){
     const gk=i===0;
     const c=COL[t];
     const mesh=makePlayer(gk?c.gk:c.shirt, gk?0x222:c.shorts, SKIN[i%SKIN.length]);
-    players.push({mesh,team:t,gk,idx:i,pbar:makePowerBar(),pbarT:0,
+    players.push({mesh,team:t,gk,idx:i,roleIdx:i,pbar:makePowerBar(),pbarT:0,
       pos:new THREE.Vector3(),vel:new THREE.Vector3(),
       base:new THREE.Vector3(),heading:0,slide:0,slideCd:0,kickCd:0,speed:0});
   }
 }
 spawnTeam(0); spawnTeam(1);
+// when a team is a man (or more) down, the remaining outfielders cover the key roles
+function assignRoles(){
+  [0,1].forEach(t=>{
+    const avail=players.filter(p=>p.team===t&&!p.gk&&!p.sentOff).sort((a,b)=>a.idx-b.idx);
+    const slots = avail.length>=4?[1,2,3,4] : avail.length===3?[1,2,4] : avail.length===2?[1,4] : [1];
+    avail.forEach((p,i)=>{ p.roleIdx = slots[i] || 1; });
+    players.forEach(p=>{ if(p.team===t&&p.gk) p.roleIdx=0; });
+  });
+}
 
 /* formations (blue attacks +Z; red attacks -Z) : gk, def, LM, RM, ST */
 const FORM=[
@@ -406,13 +415,14 @@ const KICK=[
   [[0, HALF_L-2],[0, 22],[ 13, 11],[-13, 11],[0, 3]]  // red
 ];
 function resetPositions(kickTeam){
+  assignRoles();
   players.forEach(p=>{
     if(p.sentOff) return;                             // stays off the pitch
-    const f=KICK[p.team][p.idx];
+    const f=KICK[p.team][p.roleIdx];
     p.base.set(f[0],0,f[1]);
     p.pos.copy(p.base); p.vel.set(0,0,0);
     // the kicking team's striker steps up to the centre spot to take the kickoff
-    if(!p.gk && p.idx===STRIKER && p.team===kickTeam){
+    if(!p.gk && p.roleIdx===STRIKER && p.team===kickTeam){
       const cx=p.team===0?-1.5:1.5; p.pos.set(cx,0,0); p.base.set(cx,0,0);  // hold at centre
     }
     p.mesh.position.copy(p.pos);
@@ -448,7 +458,9 @@ const linesmen=[makeLinesman(1),makeLinesman(-1)];
 linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),0,0));
 function stepLinesmen(dt){
   linesmen.forEach(l=>{
-    const tz=THREE.MathUtils.clamp(ball.position.z,-HALF_L+3,HALF_L-3);
+    // each assistant covers one half: follow the ball in your half, hold near the halfway line otherwise
+    const tz = l.side>0 ? THREE.MathUtils.clamp(ball.position.z, -2, HALF_L-3)
+                        : THREE.MathUtils.clamp(ball.position.z, -(HALF_L-3), 2);
     const spd=Math.abs(tz-l.z);
     l.z+=(tz-l.z)*Math.min(1,dt*2.5);
     l.mesh.position.set(l.side*(HALF_W+1.6),0,l.z);
@@ -870,6 +882,7 @@ function resolveTackles(){
         const red = Math.random()<0.17;
         showCard(red?'red':'yellow');
         if(red){ s.sentOff=true; if(owner===s) owner=null;      // red card -> off the pitch
+          assignRoles();                                        // team reshuffles to cover the man down
           if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
         }
         // let the ball run on a moment, then whistle the free kick to the fouled team
@@ -984,7 +997,7 @@ function stepPlayer(p,dt){
     if(desired.lengthSq()<0.04) desired.set(0,0,0);
   }else if(deadTimer>0){
     // dead ball after a whistle: ease back toward formation, nobody chases
-    const f=FORM[p.team][p.idx];
+    const f=FORM[p.team][p.roleIdx];
     desired.set(f[0]-p.pos.x, 0, f[1]*0.8 - p.pos.z);
     if(desired.lengthSq()<0.25) desired.set(0,0,0);
   }else if(isCtrl){
@@ -1028,12 +1041,12 @@ function stepPlayer(p,dt){
   }else{
     const myChaser = p.team===0?chaser0:chaser1;
     const weHave = owner && owner.team===p.team;
-    const base=FORM[p.team][p.idx];
+    const base=FORM[p.team][p.roleIdx];
     // shift formation: push forwards into attack when we have the ball, drop back otherwise
     let bx=base[0]+ball.position.x*.35;
     let bz;
     if(weHave){
-      const deep=p.idx>=3;                                   // winger + striker push deep
+      const deep=p.roleIdx>=3;                                // winger + striker push deep
       const fwd=p.team===0?(deep?30:14):(deep?-30:-14);
       bz=fwd + ball.position.z*0.15;
     }else{
@@ -1389,22 +1402,27 @@ function loop(now){
     }else if(deadTimer>0){
       // whistle blown: the ball keeps rolling while players settle, then the restart is set up
       deadTimer-=dt; owner=null;
-      players.forEach(p=>stepPlayer(p,dt));
-      stepBall(dt); ballDeflect();
+      if(deadTimer<=0){
+        const fn=deadAction; deadAction=null; if(fn)fn();   // set up the restart (brings the ball back in)
+        players.forEach(p=>stepPlayer(p,dt));
+      }else{
+        players.forEach(p=>stepPlayer(p,dt));
+        stepBall(dt); ballDeflect();
+        updatePowerBars(dt); updateLandMarker();
+      }
       stepReferee(dt); stepLinesmen(dt);
-      updatePowerBars(dt); updateLandMarker();
-      if(deadTimer<=0){ const fn=deadAction; deadAction=null; if(fn)fn(); }
     }else{
       if(pressTimer>0)pressTimer-=dt;
       if(throwTimer>0){
         throwTimer-=dt;
-        if(throwTimer<=0 && owner && owner===setPieceTaker){
-          if(setPieceGK){ gkPass(owner); }                          // keeper takes the goal kick
-          else if(throwTeam===1){                                   // rival AI takes its set-piece
-            const o=owner;
-            if(!aiTryPass(o)){ ballVel.set(-Math.sign(ball.position.x)*8,0.6,0); o.kickCd=0.4; owner=null; }
+        // during the window you take yours with PASE; if nobody takes it, auto-resume so play never stalls
+        if(throwTimer<=0){
+          const o=owner;
+          if(o && o===setPieceTaker){
+            if(setPieceGK){ gkPass(o); }
+            else if(!aiTryPass(o)){ ballVel.set((o.team===0?6:-6),0.6,0); o.kickCd=0.4; owner=null; }
           }
-          // human outfield set-piece: you take it with PASE whenever you like
+          setPieceTaker=null;                                       // window over
         }
       }
       players.forEach(p=>stepPlayer(p,dt));
