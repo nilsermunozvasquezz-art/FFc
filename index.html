@@ -543,6 +543,24 @@ function cpuTryKick(p){
   return false;
 }
 
+/* Goalkeeper distributes: pass to the most advanced open teammate */
+function gkPass(p){
+  const dir=p.team===0?1:-1;              // attack direction in Z
+  let best=null,bb=-1e9;
+  players.forEach(q=>{
+    if(q.team!==p.team||q.gk) return;
+    let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
+    let sc=q.pos.z*dir + (md>4?4:0);
+    if(p.team===0 && q===ctrlPlayer()) sc+=3;   // prefer passing to the human's player
+    if(sc>bb){bb=sc;best=q;}
+  });
+  if(!best) return;
+  const v=best.pos.clone().sub(ball.position).setY(0); const dist=v.length(); v.normalize();
+  ballVel.copy(v).multiplyScalar(THREE.MathUtils.clamp(dist*1.8,15,28)); ballVel.y=1.4;
+  p.kickCd=0.8; owner=null;
+  if(p.team===0) ctrl=players.indexOf(best);     // hand control to the receiver
+}
+
 /* ============ update ============ */
 function stepPlayer(p,dt){
   // movement target
@@ -564,6 +582,11 @@ function stepPlayer(p,dt){
       && (p.team===0?ball.position.z<gz+9:ball.position.z>gz-9);
     if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-6,p.team===0?gz+6:HALF_L-1);}
     desired.set(tx-p.pos.x,0,tz-p.pos.z);
+    if(owner===p){                     // GK caught the ball -> hold briefly, then pass out
+      p.gkHold=(p.gkHold||0)+dt;
+      desired.set(0,0,0);
+      if(p.gkHold>0.6){ gkPass(p); p.gkHold=0; }
+    }else{ p.gkHold=0; }
   }else{
     const myChaser = p.team===0?chaser0:chaser1;
     const weHave = owner && owner.team===p.team;
