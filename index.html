@@ -99,6 +99,10 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
   font-size:13px;font-weight:800;letter-spacing:.5px}
 #camRange{width:100%;accent-color:#19c268;height:26px}
 .hint{display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-bottom:4px}
+.seg{display:flex;gap:6px;margin:4px 0 2px}
+.seg button{flex:1;padding:9px 0;border:1px solid rgba(255,255,255,.18);background:#14233f;color:#fff;
+  border-radius:9px;font-size:12px;font-weight:800;letter-spacing:.5px;cursor:pointer}
+.seg button.on{background:linear-gradient(90deg,#19c268,#12a855);color:#042;border-color:transparent}
 
 /* ===== card flash ===== */
 #card{position:fixed;inset:0;z-index:19;display:none;place-items:center;pointer-events:none}
@@ -147,6 +151,10 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
     <div class="optrow"><span>CÁMARA</span><span id="camVal">1.00x</span></div>
     <input type="range" id="camRange" min="70" max="175" value="100">
     <div class="hint"><span>◄ Acercar</span><span>Alejar ►</span></div>
+    <div class="optrow"><span>GRÁFICOS</span></div>
+    <div class="seg" id="gfxSeg">
+      <button data-q="alta">ALTA</button><button data-q="media">MEDIA</button><button data-q="baja">BAJA</button>
+    </div>
     <button class="mbtn green" id="mBack">VOLVER</button>
   </div>
 </div>
@@ -176,9 +184,22 @@ const GAME_SPEED = 0.78;                    // <1 slows the whole match for a ca
 /* ============ renderer / scene ============ */
 const canvas = document.getElementById("game");
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+if('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+// graphics quality (Alta / Media / Baja) — adjustable from the menu
+let gfx='alta';
+try{const q=localStorage.getItem('ffcGfx'); if(q)gfx=q;}catch(e){}
+function applyGfx(q){
+  gfx=q; try{localStorage.setItem('ffcGfx',q);}catch(e){}
+  if(q==='alta'){ renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap; }
+  else if(q==='media'){ renderer.setPixelRatio(Math.min(devicePixelRatio,1.3)); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFShadowMap; }
+  else { renderer.setPixelRatio(1); renderer.shadowMap.enabled=false; }
+  renderer.shadowMap.needsUpdate=true;
+}
+applyGfx(gfx);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a2340);
@@ -408,6 +429,36 @@ const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.6,0.05),
 refCard.position.set(0.62,2.45,0); refCard.visible=false; ref.add(refCard);
 let cardTimer=0;
 
+/* assistant referees (linesmen) run the touchlines and flag offside */
+function makeLinesman(sideSign){
+  const m=makePlayer(0xffe14a,0x101010,0xdca878);   // yellow assistant kit
+  m.userData.ring.visible=false;
+  const flag=new THREE.Group();
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,1.5,6),new THREE.MeshBasicMaterial({color:0x222222}));
+  pole.position.y=.75; flag.add(pole);
+  const cloth=new THREE.Mesh(new THREE.PlaneGeometry(.85,.5),
+    new THREE.MeshBasicMaterial({color:0xffe14a,side:THREE.DoubleSide}));
+  cloth.position.set(.42,1.25,0); flag.add(cloth);
+  flag.position.set(.45,1.4,.1); flag.rotation.z=-1.9;              // held down by default
+  m.add(flag);
+  return {mesh:m,flag,side:sideSign,z:0,flagUp:0,u:m.userData};
+}
+const linesmen=[makeLinesman(1),makeLinesman(-1)];
+linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),0,0));
+function stepLinesmen(dt){
+  linesmen.forEach(l=>{
+    const tz=THREE.MathUtils.clamp(ball.position.z,-HALF_L+3,HALF_L-3);
+    const spd=Math.abs(tz-l.z);
+    l.z+=(tz-l.z)*Math.min(1,dt*2.5);
+    l.mesh.position.set(l.side*(HALF_W+1.6),0,l.z);
+    l.mesh.rotation.y=l.side>0?-Math.PI/2:Math.PI/2;                 // face the pitch
+    const u=l.u; u.phase+=dt*(3+spd*4); const sw=Math.sin(u.phase)*0.3;
+    u.lLeg.rotation.x=sw; u.rLeg.rotation.x=-sw;
+    if(l.flagUp>0){ l.flagUp-=dt; l.flag.rotation.z=-3.05; u.rArm.rotation.x=-2.7; u.lArm.rotation.x=0; }
+    else { l.flag.rotation.z=-1.9; u.lArm.rotation.x=-sw*.6; u.rArm.rotation.x=sw*.6; }
+  });
+}
+
 /* ball */
 const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,18,18),
   new THREE.MeshStandardMaterial({color:0xffffff,roughness:.35}));
@@ -480,7 +531,7 @@ let ctrl=1;                       // index into blue team (players[ctrl]) contro
 let owner=null;                   // player object holding ball, or null
 let teamHasBall=false;            // true if blue owns
 let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
-let lastTouch=0, throwTeam=0, throwTimer=0;   // throw-in state
+let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='';   // throw-in / set-piece state
 
 const moveDir=new THREE.Vector2();   // joystick
 let sprint=false;
@@ -597,6 +648,11 @@ function lblZoom(){camVal.textContent=camZoom.toFixed(2)+'x';}
 lblZoom();
 camRange.addEventListener('input',()=>{camZoom=camRange.value/100; lblZoom();
   try{localStorage.setItem('ffcZoom',camZoom);}catch(e){}});
+// graphics quality buttons
+const gfxSeg=document.getElementById('gfxSeg');
+function markGfx(){ gfxSeg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.q===gfx)); }
+gfxSeg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ applyGfx(b.dataset.q); markGfx(); }));
+markGfx();
 function openMenu(){menu.style.display='grid'; panelMain.style.display='block'; panelOpt.style.display='none'; paused=true;}
 function closeMenu(){menu.style.display='none'; paused=false; last=performance.now();}
 document.getElementById('btnPause').onclick=openMenu;
@@ -637,7 +693,7 @@ function passTarget(pl){
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1)return; to.normalize();
     let md=1e9; players.forEach(d=>{if(d.team!==pl.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
     const ahead=(q.pos.z-pl.pos.z)*dir;
-    const sc=ahead*1.2 + to.dot(aim)*5 + (md>4?3:0) - dist*0.12;
+    const sc=ahead*1.2 + to.dot(aim)*5 + (md>4?3:0) - dist*0.12 + (isOffside(q,pl.team)?-7:0);
     if(sc>bb){bb=sc;best=q;}
   });
   return best;
@@ -699,7 +755,7 @@ function cpuTryKick(p){
   let best=null,bz=1e9;
   players.forEach(q=>{
     if(q.team!==1||q.gk||q===p||q.sentOff) return;
-    if(q.pos.z < bz && q.pos.z < p.pos.z-1.5){
+    if(q.pos.z < bz && q.pos.z < p.pos.z-1.5 && !isOffside(q,1)){
       let md=1e9; players.forEach(d=>{if(d.team===0&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
       if(md>2.5){ bz=q.pos.z; best=q; }
     }
@@ -715,7 +771,7 @@ function gkPass(p){
   players.forEach(q=>{
     if(q.team!==p.team||q.gk||q.sentOff) return;
     let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
-    let sc=q.pos.z*dir + (md>4?4:0);
+    let sc=q.pos.z*dir + (md>4?4:0) + (isOffside(q,p.team)?-7:0);
     if(p.team===0 && q===ctrlPlayer()) sc+=3;   // prefer passing to the human's player
     if(sc>bb){bb=sc;best=q;}
   });
@@ -734,6 +790,8 @@ function gkPass(p){
    power (0.25..1, default 1) scales how hard it is struck. */
 function passBall(p,target,power){
   power=(power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
+  // offside: a forward pass to a teammate beyond the line is whistled (not on throw-ins)
+  if(throwTimer<=0 && isOffside(target,p.team)){ p.kickCd=0.4; owner=null; offsideCall(p.team,target.pos); return; }
   // lead a moving receiver so the ball arrives at their feet
   const rough=ball.position.distanceTo(target.pos);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(rough/26,0,0.5)):new THREE.Vector3();
@@ -774,7 +832,7 @@ function aiTryPass(p){
     players.forEach(q=>{
       if(q.team!==p.team||q.gk||q===p||q.sentOff) return;
       let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
-      const sc=q.pos.z*dir + (md>4?3:0);
+      const sc=q.pos.z*dir + (md>4?3:0) + (isOffside(q,p.team)?-7:0);
       if(sc>bb){bb=sc;target=q;}
     });
   }
@@ -1076,7 +1134,7 @@ function playerBallInteraction(dt){
 // throw-in: ball went out over a sideline -> award to the team that didn't touch it last
 function setupThrow(sideSign, zOut){
   const award = lastTouch===0?1:0;
-  throwTeam=award; throwTimer=1.6;
+  throwTeam=award; throwTimer=1.6; setPieceLabel='SAQUE DE BANDA';
   const z=THREE.MathUtils.clamp(zOut,-HALF_L+5,HALF_L-5);
   ball.position.set(sideSign*(HALF_W-0.3),BALL_R,z); ballVel.set(0,0,0);
   let thr=null,bd=1e9;
@@ -1088,6 +1146,32 @@ function setupThrow(sideSign, zOut){
     owner=thr; thr.holdT=0; thr.kickCd=0;
     if(award===0) ctrl=players.indexOf(thr);
   }
+}
+
+// offside: receiver beyond the 2nd-last defender, ahead of the ball, in the opponent half
+function isOffside(recv, team){
+  if(!recv || recv.gk || recv.sentOff) return false;
+  const dir = team===0?1:-1;
+  const fRec = recv.pos.z*dir;
+  if(fRec <= 0.5) return false;                    // own half -> onside
+  if(fRec <= ball.position.z*dir + 0.3) return false;  // level/behind the ball -> onside
+  const fs = players.filter(p=>p.team!==team && !p.sentOff).map(p=>p.pos.z*dir).sort((a,b)=>b-a);
+  const fSecond = fs.length>=2 ? fs[1] : (fs[0]||0);
+  return fRec > fSecond + 1.2;                      // clearly beyond the 2nd-last defender
+}
+// whistle offside -> indirect free kick to the defending team
+function offsideCall(attackTeam, pos){
+  const defend = attackTeam===0?1:0;
+  throwTeam=defend; throwTimer=1.9; setPieceLabel='FUERA DE JUEGO';
+  const z=THREE.MathUtils.clamp(pos.z,-HALF_L+5,HALF_L-5), x=THREE.MathUtils.clamp(pos.x,-HALF_W+4,HALF_W-4);
+  ball.position.set(x,BALL_R,z); ballVel.set(0,0,0);
+  let rec=null,rd=1e9;
+  players.forEach(p=>{if(p.team!==defend||p.sentOff)return;
+    const d=p.pos.distanceTo(ball.position); if(d<rd){rd=d;rec=p;}});
+  if(rec){ owner=rec; rec.holdT=0; rec.kickCd=0; if(defend===0) ctrl=players.indexOf(rec); }
+  // raise the nearer linesman's flag
+  let ls=linesmen[0]; linesmen.forEach(l=>{ if(Math.abs(l.side*HALF_W - x) < Math.abs(ls.side*HALF_W - x)) ls=l; });
+  ls.flagUp=2.2;
 }
 
 function stepBall(dt){
@@ -1230,7 +1314,7 @@ function updateButtons(){
     lA.textContent='BARRER'; lB.textContent='PRESIONAR'; lC.textContent='CAMBIAR';
     poss.textContent='🛡 DEFENDIENDO'; poss.style.color='#ffce6a';
   }
-  if(thr){ poss.textContent='🫳 SAQUE DE BANDA (PASE)'; poss.style.color='#9fe9ff'; }
+  if(thr){ poss.textContent=(setPieceLabel==='FUERA DE JUEGO'?'🚩 ':'🫳 ')+setPieceLabel+' (PASE)'; poss.style.color='#9fe9ff'; }
 }
 
 /* ============ loop ============ */
@@ -1247,7 +1331,7 @@ function loop(now){
       kickoffHold-=dt;
       players.forEach(p=>stepPlayer(p,dt));
       ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-      stepReferee(dt);
+      stepReferee(dt); stepLinesmen(dt);
       if(kickoffHold<=0) kickoffBegin();
     }else{
       if(pressTimer>0)pressTimer-=dt;
@@ -1265,7 +1349,7 @@ function loop(now){
       playerBallInteraction(dt);
       stepBall(dt);
       ballDeflect();
-      stepReferee(dt);
+      stepReferee(dt); stepLinesmen(dt);
       if(charge.which){               // show the charging power over the controlled player
         const held=(performance.now()-charge.t0)/1000;
         showPower(ctrlPlayer(), THREE.MathUtils.clamp(held/CHARGE_MAX,0.08,1));
