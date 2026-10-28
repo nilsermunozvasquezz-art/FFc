@@ -216,29 +216,43 @@ function buildPitch(){
   ap.rotation.x=-Math.PI/2; ap.position.y=-0.02; scene.add(ap);
 
   // lines
-  const lineMat = new THREE.MeshBasicMaterial({color:0xffffff});
+  const lineMat = new THREE.MeshBasicMaterial({color:0xf4f8ff});
+  const t=0.26;
   function line(w,l,x,z){
     const m=new THREE.Mesh(new THREE.PlaneGeometry(w,l),lineMat);
     m.rotation.x=-Math.PI/2; m.position.set(x,0.02,z); scene.add(m);
   }
-  const t=0.22;
-  line(HALF_W*2, t, 0, HALF_L); line(HALF_W*2, t, 0, -HALF_L);      // ends
-  line(t, HALF_L*2, HALF_W,0); line(t, HALF_L*2, -HALF_W,0);         // sides
-  line(HALF_W*2, t, 0, 0);                                           // midline
-  // center circle
-  const cc=new THREE.Mesh(new THREE.RingGeometry(6.0,6.0+t,48),lineMat);
-  cc.rotation.x=-Math.PI/2; cc.position.y=0.02; scene.add(cc);
-  const cd=new THREE.Mesh(new THREE.CircleGeometry(0.4,16),lineMat);
-  cd.rotation.x=-Math.PI/2; cd.position.y=0.02; scene.add(cd);
-  // boxes
+  function arc(rIn,x,z,start,len){
+    const m=new THREE.Mesh(new THREE.RingGeometry(rIn,rIn+t,56,1,start,len),lineMat);
+    m.rotation.x=-Math.PI/2; m.position.set(x,0.02,z); scene.add(m);
+  }
+  function dot(x,z){
+    const m=new THREE.Mesh(new THREE.CircleGeometry(0.26,18),lineMat);
+    m.rotation.x=-Math.PI/2; m.position.set(x,0.02,z); scene.add(m);
+  }
+  // perimeter + midline
+  line(HALF_W*2, t, 0, HALF_L); line(HALF_W*2, t, 0, -HALF_L);
+  line(t, HALF_L*2, HALF_W,0);  line(t, HALF_L*2, -HALF_W,0);
+  line(HALF_W*2, t, 0, 0);
+  arc(6.0,0,0,0,Math.PI*2); dot(0,0);                 // center circle + spot
+  // corner arcs (quarter circles bulging into the pitch)
+  const cr=1.2;
+  arc(cr,-HALF_W,-HALF_L,0,Math.PI/2);
+  arc(cr, HALF_W,-HALF_L,Math.PI/2,Math.PI/2);
+  arc(cr, HALF_W, HALF_L,Math.PI,Math.PI/2);
+  arc(cr,-HALF_W, HALF_L,Math.PI*1.5,Math.PI/2);
+  // penalty + goal areas per end
+  const BW=11, B18=8, SW6=6, B6=3, pspot=6, parc=5;
   [-1,1].forEach(s=>{
-    const bz=s*HALF_L;
-    line(22, t, 0, bz - s*7);          // 18yd front
-    line(t, 14, -11, bz - s*3.5);
-    line(t, 14,  11, bz - s*3.5);
-    line(11, t, 0, bz - s*2.6);        // 6yd front
-    line(t, 5, -5.5, bz - s*1.3);
-    line(t, 5,  5.5, bz - s*1.3);
+    const gl=s*HALF_L;
+    line(BW*2, t, 0, gl - s*B18);              // 18-yd front
+    line(t, B18, -BW, gl - s*B18/2);           // 18-yd sides
+    line(t, B18,  BW, gl - s*B18/2);
+    line(SW6*2, t, 0, gl - s*B6);              // 6-yd front
+    line(t, B6, -SW6, gl - s*B6/2);            // 6-yd sides
+    line(t, B6,  SW6, gl - s*B6/2);
+    dot(0, gl - s*pspot);                      // penalty spot
+    arc(parc, 0, gl - s*pspot, s>0?Math.PI*0.25:Math.PI*1.25, Math.PI*0.5);  // penalty arc toward midfield
   });
 }
 buildPitch();
@@ -246,22 +260,39 @@ buildPitch();
 /* ============ goals ============ */
 function buildGoal(zside){
   const g=new THREE.Group();
-  const postMat=new THREE.MeshStandardMaterial({color:0xffffff,roughness:.4});
-  const bar=new THREE.Mesh(new THREE.BoxGeometry(GOAL_W+.4,.22,.22),postMat);
-  bar.position.y=GOAL_H; g.add(bar);
+  const W=GOAL_W, H=GOAL_H, D=GOAL_D, r=0.14;
+  const postMat=new THREE.MeshStandardMaterial({color:0xf4f7ff,roughness:.3,metalness:.15});
+  // crossbar
+  const bar=new THREE.Mesh(new THREE.CylinderGeometry(r,r,W+2*r,14),postMat);
+  bar.rotation.z=Math.PI/2; bar.position.y=H; bar.castShadow=true; g.add(bar);
   [-1,1].forEach(s=>{
-    const p=new THREE.Mesh(new THREE.CylinderGeometry(.12,.12,GOAL_H,10),postMat);
-    p.position.set(s*GOAL_W/2,GOAL_H/2,0); p.castShadow=true; g.add(p);
+    // front post
+    const p=new THREE.Mesh(new THREE.CylinderGeometry(r,r,H,14),postMat);
+    p.position.set(s*W/2,H/2,0); p.castShadow=true; g.add(p);
+    // back post (shorter) + top stay from crossbar to back
+    const bp=new THREE.Mesh(new THREE.CylinderGeometry(r*.7,r*.7,H*.85,10),postMat);
+    bp.position.set(s*W/2,H*.425,D); g.add(bp);
+    const stay=new THREE.Mesh(new THREE.CylinderGeometry(r*.55,r*.55,D,8),postMat);
+    stay.rotation.x=Math.PI/2; stay.position.set(s*W/2,H-.05,D/2); g.add(stay);
   });
-  // net (back + sides as line grid)
-  const netMat=new THREE.LineBasicMaterial({color:0xddddee,transparent:true,opacity:.35});
-  const pts=[];
-  for(let i=-6;i<=6;i++){const x=i*GOAL_W/12;pts.push(x,0,0, x,GOAL_H,0, x,GOAL_H,-GOAL_D);}
-  for(let j=0;j<=4;j++){const y=j*GOAL_H/4;pts.push(-GOAL_W/2,y,-GOAL_D, GOAL_W/2,y,-GOAL_D);}
+  // ground back bar
+  const gb=new THREE.Mesh(new THREE.CylinderGeometry(r*.6,r*.6,W,10),postMat);
+  gb.rotation.z=Math.PI/2; gb.position.set(0,r*.6,D); g.add(gb);
+  // net grid (back, sides, top) extending behind the goal line (+local Z)
+  const netMat=new THREE.LineBasicMaterial({color:0xeef2ff,transparent:true,opacity:.3});
+  const pts=[], nx=12, ny=7, nz=4;
+  for(let i=0;i<=nx;i++){const x=-W/2+W*i/nx; pts.push(x,0,D, x,H,D);}          // back verticals
+  for(let j=0;j<=ny;j++){const y=H*j/ny; pts.push(-W/2,y,D, W/2,y,D);}          // back horizontals
+  [-1,1].forEach(s=>{
+    for(let k=0;k<=nz;k++){const z=D*k/nz; pts.push(s*W/2,0,z, s*W/2,H,z);}     // side verticals
+    for(let j=0;j<=ny;j++){const y=H*j/ny; pts.push(s*W/2,y,0, s*W/2,y,D);}     // side horizontals
+  });
+  for(let i=0;i<=nx;i++){const x=-W/2+W*i/nx; pts.push(x,H,0, x,H,D);}          // roof long
+  for(let k=0;k<=nz;k++){const z=D*k/nz; pts.push(-W/2,H,z, W/2,H,z);}          // roof cross
   const ng=new THREE.BufferGeometry();
   ng.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
-  const net=new THREE.LineSegments(ng,netMat); g.add(net);
-  g.position.set(0, 0, zside*(HALF_L+GOAL_D/2));
+  g.add(new THREE.LineSegments(ng,netMat));
+  g.position.set(0,0,zside*HALF_L);
   g.rotation.y = zside>0?0:Math.PI;
   scene.add(g);
 }
@@ -274,9 +305,9 @@ function buildStands(){
     const b=new THREE.Mesh(new THREE.BoxGeometry(.3,1.1,HALF_L*2),ledMat);
     b.position.set(s*(HALF_W+1.2),.55,0); scene.add(b);
   });
-  [-1,1].forEach(s=>{                       // behind-goal boards (run along X)
+  [-1,1].forEach(s=>{                       // behind-goal boards (run along X, clear of nets)
     const b=new THREE.Mesh(new THREE.BoxGeometry(HALF_W*2,1.1,.3),ledMat);
-    b.position.set(0,.55,s*(HALF_L+1.2)); scene.add(b);
+    b.position.set(0,.55,s*(HALF_L+3.2)); scene.add(b);
   });
 }
 buildStands();
@@ -541,7 +572,10 @@ function doAction(which){
   }else{
     // DEFENSE: A barrer, B presión, C cambiar
     if(which==='C'){ const n=nearestToBall(0,true); if(n){ctrl=players.indexOf(n);} }
-    else if(which==='B'){ pressTimer=2.2; }         // teammates press
+    else if(which==='B'){                            // PRESIONAR: go win the ball
+      pressTimer=2.4;
+      const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n);
+    }
     else if(which==='A'){ if(p.slideCd<=0){p.slide=0.5; p.slideCd=1.4;} } // slide tackle
   }
 }
@@ -597,7 +631,11 @@ function gkPass(p){
 
 /* Pass the ball to a target teammate: lofted if a rival blocks the lane, else on the ground */
 function passBall(p,target){
-  const v=target.pos.clone().sub(ball.position).setY(0); const dist=v.length();
+  // lead a moving receiver so the ball arrives at their feet
+  const rough=ball.position.distanceTo(target.pos);
+  const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(rough/26,0,0.5)):new THREE.Vector3();
+  const aim=target.pos.clone().add(lead); aim.y=0;
+  const v=aim.clone().sub(ball.position).setY(0); const dist=v.length();
   if(dist<1) return; v.normalize();
   let blocked=false;                       // is an opponent in the passing lane?
   players.forEach(o=>{
@@ -606,14 +644,16 @@ function passBall(p,target){
     const along=rel.dot(v);
     if(along>1.5 && along<dist-1.5){
       const perp=rel.addScaledVector(v,-along).length();
-      if(perp<2.3) blocked=true;
+      if(perp<2.2) blocked=true;
     }
   });
-  if(blocked){                             // lob over
-    const T=THREE.MathUtils.clamp(dist/16,0.9,1.45);
-    ballVel.copy(v).multiplyScalar(dist/T*1.18); ballVel.y=26*T/2;
-  }else{                                   // ground pass
-    ballVel.copy(v).multiplyScalar(THREE.MathUtils.clamp(dist*1.6,14,26)); ballVel.y=0.6;
+  if(blocked){                             // lob so it drops on the target (g=26)
+    const T=THREE.MathUtils.clamp(dist/17,0.85,1.5);
+    ballVel.copy(v).multiplyScalar(dist/T*1.16); ballVel.y=26*T/2;
+  }else{                                   // ground pass: speed set to actually reach the target
+    // exp. friction k≈2.12/s on the ground; v0≈dist*k*1.2 lands it on the receiver
+    const sp=THREE.MathUtils.clamp(dist*2.7, 15, 54);
+    ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.3;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
 }
@@ -675,6 +715,24 @@ function resolveTackles(){
   });
 }
 
+/* PRESIONAR steal: while pressing, a blue player reaching the rival carrier wins the ball */
+function pressSteal(){
+  if(pressTimer<=0 || !(owner && owner.team===1)) return;
+  const carrier=owner;
+  for(const p of players){
+    if(p.team!==0||p.gk||(p.fall||0)>0) continue;
+    if(p.pos.distanceTo(carrier.pos)<1.8){
+      const away=p.pos.clone().sub(carrier.pos).setY(0);
+      if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
+      away.normalize();
+      ball.position.set(p.pos.x+away.x*0.6,BALL_R,p.pos.z+away.z*0.6);
+      ballVel.copy(away).multiplyScalar(3);
+      owner=p; ctrl=players.indexOf(p); pressTimer=0;
+      break;
+    }
+  }
+}
+
 /* ============ update ============ */
 function stepPlayer(p,dt){
   // movement target
@@ -696,6 +754,11 @@ function stepPlayer(p,dt){
     keyDir();
     // side camera: screen-right = world -Z, screen-up = world -X
     desired.set(moveDir.y, 0, -moveDir.x);
+    // PRESIONAR: if you're not steering, charge the rival carrier (or the ball) to dispossess
+    if(pressTimer>0 && desired.lengthSq()<0.05){
+      const tgt=(owner&&owner.team!==p.team)?owner.pos:ball.position;
+      desired.copy(tgt).sub(p.pos).setY(0);
+    }
   }else if(p.gk){
     // goalkeeper: track ball; DIVE to predicted spot when a shot is incoming
     const gz=p.team===0?-HALF_L+1.5:HALF_L-1.5;
@@ -760,6 +823,8 @@ function stepPlayer(p,dt){
   let spd = p.gk?7.5:(isCtrl?(sprint?13:9.5):(p.team===1?9.2:8.8));
   if(p.slide>0) spd=15;
   if((p.dive||0)>0) spd=Math.max(spd,17);   // keeper dive lunge
+  if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
+  if(owner===p && p.team===1 && pressTimer>0) spd*=0.8;  // carrier loses a step under press
   if(desired.lengthSq()>0.001){
     desired.normalize();
     p.heading=Math.atan2(desired.x,desired.z);
@@ -965,6 +1030,7 @@ function loop(now){
     if(pressTimer>0)pressTimer-=dt;
     players.forEach(p=>stepPlayer(p,dt));
     resolveTackles();
+    pressSteal();
     playerBallInteraction(dt);
     stepBall(dt);
     stepReferee(dt);
