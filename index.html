@@ -378,13 +378,21 @@ const FORM=[
   [[0, HALF_L-2],[0, 18],[ 13, 4],[-13, 4],[0,-6]]    // red mirrored
 ];
 const STRIKER=PER_TEAM-1;                              // last index = striker
+// kickoff layout: every player inside their OWN half (blue z<0, red z>0)
+const KICK=[
+  [[0,-HALF_L+2],[0,-22],[-13,-11],[13,-11],[0,-3]],  // blue
+  [[0, HALF_L-2],[0, 22],[ 13, 11],[-13, 11],[0, 3]]  // red
+];
 function resetPositions(kickTeam){
   players.forEach(p=>{
-    const f=FORM[p.team][p.idx];
+    if(p.sentOff) return;                             // stays off the pitch
+    const f=KICK[p.team][p.idx];
     p.base.set(f[0],0,f[1]);
     p.pos.copy(p.base); p.vel.set(0,0,0);
-    // the kicking team's striker starts at center for the kickoff
-    if(!p.gk && p.idx===STRIKER && p.team===kickTeam) p.pos.set(p.team===0?-1.5:1.5,0,0);
+    // the kicking team's striker steps up to the centre spot to take the kickoff
+    if(!p.gk && p.idx===STRIKER && p.team===kickTeam){
+      const cx=p.team===0?-1.5:1.5; p.pos.set(cx,0,0); p.base.set(cx,0,0);  // hold at centre
+    }
     p.mesh.position.copy(p.pos);
     p.heading = p.team===0?0:Math.PI;
   });
@@ -491,14 +499,12 @@ function kickoffRestart(team){
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
   ctrl=1; owner=null; kickoffHold=1.8;    // hold in formation, then play
 }
-// the striker taps the ball back to a teammate to start play
-function kickoffTap(){
-  const st=players.find(p=>p.team===kickoffTeam&&p.idx===STRIKER) || nearestToBall(kickoffTeam,true);
-  if(st){ owner=st; st.holdT=0;
-    const mate=players.find(p=>p.team===kickoffTeam&&!p.gk&&p!==st);
-    if(mate) passBall(st,mate);
-    if(kickoffTeam===0 && st) ctrl=players.indexOf(st);
-  }
+// hand the kickoff to the kicking team's striker; you (or the rival AI) play it out
+function kickoffBegin(){
+  const st=players.find(p=>p.team===kickoffTeam&&p.idx===STRIKER&&!p.sentOff) || nearestToBall(kickoffTeam,true);
+  if(!st) return;
+  owner=st; st.holdT=0;
+  if(kickoffTeam===0) ctrl=players.indexOf(st);   // you take the kickoff and can pass it
 }
 
 /* ============ input ============ */
@@ -584,14 +590,14 @@ document.getElementById('goBtn').onclick=()=>{
 /* ============ actions ============ */
 function nearestToBall(team,excludeGK){
   let best=null,bd=1e9;
-  players.forEach(p=>{if(p.team!==team)return; if(excludeGK&&p.gk)return;
+  players.forEach(p=>{if(p.team!==team||p.sentOff)return; if(excludeGK&&p.gk)return;
     const d=p.pos.distanceTo(ball.position); if(d<bd){bd=d;best=p;}});
   return best;
 }
 // how many same-team outfielders are strictly closer to the ball than p (0 = nearest)
 function ballRank(p){
   const d=p.pos.distanceTo(ball.position); let r=0;
-  players.forEach(q=>{ if(q.team===p.team&&!q.gk&&q!==p && q.pos.distanceTo(ball.position)<d) r++; });
+  players.forEach(q=>{ if(q.team===p.team&&!q.gk&&q!==p&&!q.sentOff && q.pos.distanceTo(ball.position)<d) r++; });
   return r;
 }
 function aimDir(p){
@@ -605,7 +611,7 @@ function passTarget(pl){
   const dir=pl.team===0?1:-1; let best=null,bb=-1e9;
   const aim=aimDir(pl);
   players.forEach(q=>{
-    if(q.team!==pl.team||q.gk||q===pl) return;
+    if(q.team!==pl.team||q.gk||q===pl||q.sentOff) return;
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1)return; to.normalize();
     let md=1e9; players.forEach(d=>{if(d.team!==pl.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
     const ahead=(q.pos.z-pl.pos.z)*dir;
@@ -668,7 +674,7 @@ function cpuTryKick(p){
   // otherwise pass forward to an advanced open teammate (precise, auto ground/loft)
   let best=null,bz=1e9;
   players.forEach(q=>{
-    if(q.team!==1||q.gk||q===p) return;
+    if(q.team!==1||q.gk||q===p||q.sentOff) return;
     if(q.pos.z < bz && q.pos.z < p.pos.z-1.5){
       let md=1e9; players.forEach(d=>{if(d.team===0&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
       if(md>2.5){ bz=q.pos.z; best=q; }
@@ -683,7 +689,7 @@ function gkPass(p){
   const dir=p.team===0?1:-1;              // attack direction in Z
   let best=null,bb=-1e9;
   players.forEach(q=>{
-    if(q.team!==p.team||q.gk) return;
+    if(q.team!==p.team||q.gk||q.sentOff) return;
     let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
     let sc=q.pos.z*dir + (md>4?4:0);
     if(p.team===0 && q===ctrlPlayer()) sc+=3;   // prefer passing to the human's player
@@ -734,11 +740,11 @@ function passBall(p,target){
 function aiTryPass(p){
   if(p.kickCd>0) return false;
   let target=null;
-  if(p.team===0){ const h=ctrlPlayer(); if(h!==p && !h.gk) target=h; }
+  if(p.team===0){ const h=ctrlPlayer(); if(h!==p && !h.gk && !h.sentOff) target=h; }
   if(!target){
     const dir=p.team===0?1:-1; let bb=-1e9;
     players.forEach(q=>{
-      if(q.team!==p.team||q.gk||q===p) return;
+      if(q.team!==p.team||q.gk||q===p||q.sentOff) return;
       let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
       const sc=q.pos.z*dir + (md>4?3:0);
       if(sc>bb){bb=sc;target=q;}
@@ -753,19 +759,23 @@ function aiTryPass(p){
    and steals the ball if that opponent had it (or it's loose nearby). */
 function resolveTackles(){
   players.forEach(s=>{
-    if(s.slide<=0 || (s.fall||0)>0) return;
+    if(s.slide<=0 || (s.fall||0)>0 || s.sentOff) return;
     players.forEach(o=>{
-      if(o.team===s.team || (o.fall||0)>0) return;
+      if(o.team===s.team || (o.fall||0)>0 || o.sentOff) return;
       if(s.pos.distanceTo(o.pos) > 1.7) return;
       o.fall=1.1; o.vel.set(0,0,0);              // opponent falls
       const hadBall = (owner===o || ball.position.distanceTo(o.pos)<3);
       const foul = Math.random() < (hadBall?0.3:0.6);   // mistimed tackles foul more
       if(foul){
         // referee books the tackler; free kick to the fouled team
-        showCard(Math.random()<0.17?'red':'yellow');
+        const red = Math.random()<0.17;
+        showCard(red?'red':'yellow');
+        if(red){ s.sentOff=true; if(owner===s) owner=null;      // red card -> off the pitch
+          if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
+        }
         ballVel.set(0,0,0); ball.position.set(o.pos.x,BALL_R,o.pos.z);
         let rec=null,rd=1e9;
-        players.forEach(q=>{ if(q.team===o.team&&!q.gk&&(q.fall||0)<=0){
+        players.forEach(q=>{ if(q.team===o.team&&!q.gk&&(q.fall||0)<=0&&!q.sentOff){
           const d=q.pos.distanceTo(o.pos); if(d<rd){rd=d;rec=q;} }});
         owner=rec||null;
         if(rec && rec.team===0) ctrl=players.indexOf(rec);
@@ -792,7 +802,7 @@ function pressSteal(){
   if(pressTimer<=0 || !(owner && owner.team===1)) return;
   const carrier=owner;
   for(const p of players){
-    if(p.team!==0||p.gk||(p.fall||0)>0) continue;
+    if(p.team!==0||p.gk||(p.fall||0)>0||p.sentOff) continue;
     if(p.pos.distanceTo(carrier.pos)<1.8){
       const away=p.pos.clone().sub(carrier.pos).setY(0);
       if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
@@ -810,7 +820,7 @@ function cpuSteal(){
   if(!(owner && owner.team===0)) return;
   const carrier=owner;
   for(const p of players){
-    if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0) continue;
+    if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
     if(p.pos.distanceTo(carrier.pos)<1.35){
       const away=p.pos.clone().sub(carrier.pos).setY(0);
       if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
@@ -827,7 +837,7 @@ function cpuSteal(){
 function ballDeflect(){
   const rad=P_R+BALL_R-0.15;
   for(const p of players){
-    if(p===owner || (p.fall||0)>0) continue;
+    if(p===owner || (p.fall||0)>0 || p.sentOff) continue;
     const dx=ball.position.x-p.pos.x, dz=ball.position.z-p.pos.z;
     const d=Math.hypot(dx,dz);
     if(d<rad && ball.position.y<2.2 && ballVel.length()>6){
@@ -846,6 +856,21 @@ function stepPlayer(p,dt){
   let desired=new THREE.Vector3();
   const isCtrl = (p===ctrlPlayer());
   const chaser0 = nearestToBall(0,true), chaser1 = nearestToBall(1,true);
+
+  // sent off (red card) -> walk off the pitch to your side and stay out
+  if(p.sentOff){
+    const exitX=(p.team===0?-1:1)*(HALF_W+7);
+    const d=new THREE.Vector3(exitX-p.pos.x,0,(p.pos.z*0.5)-p.pos.z);
+    if(d.length()>0.3){ d.normalize(); p.heading=Math.atan2(d.x,d.z); p.vel.lerp(d.multiplyScalar(7),0.15); }
+    else p.vel.multiplyScalar(0.8);
+    p.pos.addScaledVector(p.vel,dt);
+    const m=p.mesh; m.position.set(p.pos.x,0,p.pos.z); m.rotation.set(0,p.heading,0);
+    const u=m.userData; u.phase+=dt*(4+p.vel.length()); const sw=Math.sin(u.phase)*0.45;
+    u.lLeg.rotation.x=sw;u.rLeg.rotation.x=-sw;u.lArm.rotation.x=-sw*.8;u.rArm.rotation.x=sw*.8;
+    u.ring.visible=false;
+    if(p.pbar) p.pbar.g.visible=false;
+    return;
+  }
 
   // knocked down by a tackle -> lie on the ground, can't move
   if((p.fall||0)>0){
@@ -984,7 +1009,7 @@ function stepPlayer(p,dt){
 function playerBallInteraction(dt){
   // find nearest player to ball
   let near=null,nd=1e9;
-  players.forEach(p=>{const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
+  players.forEach(p=>{if(p.sentOff)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
   // slide steal / possession
   if(near && nd<POSSESS){
     owner=near;
@@ -1066,20 +1091,34 @@ function showCard(color){
   c.style.display='grid';
   clearTimeout(showCard._t); showCard._t=setTimeout(()=>{c.style.display='none';},1500);
 }
+const refVel=new THREE.Vector3();
 function stepReferee(dt){
-  // when showing a card, hurry to the foul spot; else follow play from a diagonal offset
   const booking = cardTimer>0;
-  const want = booking
-    ? foulSpot.clone().add(new THREE.Vector3(2.2,0,-2.2))
-    : ball.position.clone().add(new THREE.Vector3(7,0,-6));
+  let want;
+  if(booking){
+    want = foulSpot.clone().add(new THREE.Vector3(2.4,0,-2.4));
+  }else{
+    // keep a smart diagonal distance from the ball, leading slightly where play heads,
+    // and never stand right on top of the ball or the carrier
+    const lead = ballVel.clone().setY(0).multiplyScalar(0.25);
+    want = ball.position.clone().add(lead).add(new THREE.Vector3(8,0,-7));
+    const toBall=want.clone().sub(ball.position); toBall.y=0;
+    if(toBall.length()<6){ toBall.setLength(6); want.copy(ball.position).add(toBall); }
+  }
   want.x=THREE.MathUtils.clamp(want.x,-HALF_W+2,HALF_W-2);
   want.z=THREE.MathUtils.clamp(want.z,-HALF_L+2,HALF_L-2);
-  refPos.lerp(want,dt*(booking?3:1.5));
+  // smooth, momentum-based movement toward the target (jogs, doesn't teleport)
+  const toWant=want.clone().sub(refPos); toWant.y=0;
+  const maxSpd = booking?10:7.5;
+  const desiredV=toWant.clone().clampLength(0,maxSpd);
+  refVel.lerp(desiredV, Math.min(1,dt*2.5));
+  refPos.addScaledVector(refVel,dt);
   ref.position.set(refPos.x,0,refPos.z);
-  const d=(booking?foulSpot.clone():want).sub(refPos);
-  if(d.lengthSq()>0.01) ref.rotation.y=Math.atan2(d.x,d.z);
-  const u=ref.userData; u.phase+=dt*6;
-  const sw=Math.sin(u.phase)*0.4;
+  const faceAt=(booking?foulSpot:ball.position).clone().sub(refPos); faceAt.y=0;
+  if(faceAt.lengthSq()>0.02) ref.rotation.y=Math.atan2(faceAt.x,faceAt.z);
+  const u=ref.userData; const spd=refVel.length();
+  u.phase+=dt*(4+spd*1.1);
+  const sw=Math.sin(u.phase)*Math.min(0.6,0.15+spd*0.06);
   u.lLeg.rotation.x=sw;u.rLeg.rotation.x=-sw;
   if(booking){ u.rArm.rotation.x=-2.6; u.lArm.rotation.x=0; }   // arm raised with the card
   else { u.lArm.rotation.x=-sw*.8; u.rArm.rotation.x=sw*.8; }
@@ -1153,7 +1192,7 @@ function loop(now){
       players.forEach(p=>stepPlayer(p,dt));
       ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
       stepReferee(dt);
-      if(kickoffHold<=0) kickoffTap();
+      if(kickoffHold<=0) kickoffBegin();
     }else{
       if(pressTimer>0)pressTimer-=dt;
       players.forEach(p=>stepPlayer(p,dt));
