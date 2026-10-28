@@ -365,7 +365,7 @@ function spawnTeam(t){
     const gk=i===0;
     const c=COL[t];
     const mesh=makePlayer(gk?c.gk:c.shirt, gk?0x222:c.shorts, SKIN[i%SKIN.length]);
-    players.push({mesh,team:t,gk,idx:i,
+    players.push({mesh,team:t,gk,idx:i,pbar:makePowerBar(),pbarT:0,
       pos:new THREE.Vector3(),vel:new THREE.Vector3(),
       base:new THREE.Vector3(),heading:0,slide:0,slideCd:0,kickCd:0,speed:0});
   }
@@ -415,6 +415,55 @@ const ballVel=new THREE.Vector3();
 const bShadow=new THREE.Mesh(new THREE.CircleGeometry(BALL_R,16),
   new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:.3}));
 bShadow.rotation.x=-Math.PI/2; scene.add(bShadow);
+
+// landing marker (X) shown where a high ball will drop
+const landMarker=(function(){
+  const g=new THREE.Group();
+  const mat=new THREE.MeshBasicMaterial({color:0xffe14a});
+  [45,-45].forEach(a=>{const m=new THREE.Mesh(new THREE.BoxGeometry(1.9,0.05,0.24),mat);
+    m.rotation.y=a*Math.PI/180; m.position.y=0.04; g.add(m);});
+  g.visible=false; scene.add(g); return g;
+})();
+function updateLandMarker(){
+  if(ball.position.y>1.3){
+    let x=ball.position.x,y=ball.position.y,z=ball.position.z;
+    let vx=ballVel.x,vy=ballVel.y,vz=ballVel.z; const h=0.03;
+    for(let i=0;i<240;i++){
+      vy-=26*h; x+=vx*h; y+=vy*h; z+=vz*h;
+      const fr=Math.pow(0.85,h); vx*=fr; vz*=fr;
+      if(y<=BALL_R) break;
+    }
+    landMarker.position.set(x,0.04,z); landMarker.visible=true;
+  } else landMarker.visible=false;
+}
+
+// power bar shown over a player's head when they kick
+function makePowerBar(){
+  const g=new THREE.Group();
+  const bg=new THREE.Mesh(new THREE.PlaneGeometry(1.7,0.34),
+    new THREE.MeshBasicMaterial({color:0x0a0a0a,transparent:true,opacity:.82}));
+  const fill=new THREE.Mesh(new THREE.PlaneGeometry(1.5,0.2),
+    new THREE.MeshBasicMaterial({color:0x33dd55}));
+  fill.position.z=0.01; g.add(bg,fill); g.visible=false; scene.add(g);
+  return {g,fill};
+}
+function showPower(p,frac){
+  if(!p||!p.pbar) return;
+  frac=THREE.MathUtils.clamp(frac,0.08,1);
+  const f=p.pbar.fill;
+  f.scale.x=frac; f.position.x=-(1.5*(1-frac))/2;
+  f.material.color.setHSL(0.33*(1-frac),0.9,0.5);   // green (soft) -> red (hard)
+  p.pbar.g.visible=true; p.pbarT=0.7;
+}
+function updatePowerBars(dt){
+  players.forEach(p=>{
+    if(!p.pbar || (p.pbarT||0)<=0) return;
+    p.pbarT-=dt;
+    p.pbar.g.position.set(p.pos.x,2.95,p.pos.z);
+    p.pbar.g.quaternion.copy(camera.quaternion);    // billboard to camera
+    if(p.pbarT<=0) p.pbar.g.visible=false;
+  });
+}
 
 /* ============ game state ============ */
 let score=[0,0], timeLeft=MATCH_SECS, running=false, paused=false;
@@ -571,8 +620,10 @@ function doAction(which){
       const gz=pl.team===0?HALF_L:-HALF_L;
       const target=new THREE.Vector3((Math.random()-.5)*GOAL_W*.7,0,gz).sub(ball.position).setY(0).normalize();
       ballVel.copy(target).multiplyScalar(34); ballVel.y=4.5;
+      showPower(pl, 0.95);
     }else{                      // CHUTE elevado (lob/cross)
       ballVel.copy(dir).multiplyScalar(18); ballVel.y=10;
+      showPower(pl, 0.6);
     }
   }else{
     // DEFENSE: A barrer, B presión, C cambiar
@@ -595,7 +646,7 @@ function cpuTryKick(p){
   if(dg<21 && Math.abs(ball.position.x)<GOAL_W+3){
     const tx=(Math.random()-.5)*GOAL_W*0.8;
     const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0).normalize();
-    ballVel.copy(dir).multiplyScalar(30); ballVel.y=3.5; p.kickCd=.6; owner=null; return true;
+    ballVel.copy(dir).multiplyScalar(30); ballVel.y=3.5; p.kickCd=.6; owner=null; showPower(p,0.92); return true;
   }
   // otherwise pass forward to an advanced open teammate (precise, auto ground/loft)
   let best=null,bz=1e9;
@@ -628,6 +679,7 @@ function gkPass(p){
   ballVel.copy(v).multiplyScalar(dist/T*1.18);       // horizontal speed (+drag compensation)
   ballVel.y=26*T/2;                                  // vertical speed (g=26) for the arc
   p.kickCd=0.8; owner=null;
+  showPower(p, 0.85);                                 // keeper clearance power bar
   if(p.team===0) ctrl=players.indexOf(best);         // hand control to the receiver
 }
 
@@ -658,6 +710,7 @@ function passBall(p,target){
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.3;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
+  showPower(p, THREE.MathUtils.clamp(dist/30, 0.25, 1));   // pass power bar
 }
 
 /* AI open-play pass. Blue carriers feed the human; others find an advanced open mate. */
@@ -749,6 +802,23 @@ function cpuSteal(){
       ballVel.copy(away).multiplyScalar(4);
       owner=p; p.stealCd=0.9;
       break;
+    }
+  }
+}
+
+/* Physics: a fast loose ball ricochets off players' bodies/legs */
+function ballDeflect(){
+  const rad=P_R+BALL_R-0.15;
+  for(const p of players){
+    if(p===owner || (p.fall||0)>0) continue;
+    const dx=ball.position.x-p.pos.x, dz=ball.position.z-p.pos.z;
+    const d=Math.hypot(dx,dz);
+    if(d<rad && ball.position.y<2.2 && ballVel.length()>6){
+      const nx=dx/(d||1), nz=dz/(d||1);
+      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;
+      const vn=ballVel.x*nx+ballVel.z*nz;
+      if(vn<0){ ballVel.x-=1.5*vn*nx; ballVel.z-=1.5*vn*nz; }   // reflect with damping
+      ballVel.x*=0.8; ballVel.z*=0.8; ballVel.y+=1.5;           // small pop up
     }
   }
 }
@@ -920,8 +990,8 @@ function stepBall(dt){
   ballVel.y-=26*dt;
   ball.position.addScaledVector(ballVel,dt);
   if(ball.position.y<BALL_R){
-    ball.position.y=BALL_R; ballVel.y*=-0.35;
-    if(Math.abs(ballVel.y)<1.4)ballVel.y=0;
+    ball.position.y=BALL_R; ballVel.y*=-0.48;                   // livelier bounce
+    if(Math.abs(ballVel.y)<1.3)ballVel.y=0;
     const fr=Math.pow(0.12,dt); ballVel.x*=fr; ballVel.z*=fr;   // ground friction
   }else{
     const fr=Math.pow(0.85,dt); ballVel.x*=fr; ballVel.z*=fr;   // air drag
@@ -1058,7 +1128,10 @@ function loop(now){
     cpuSteal();
     playerBallInteraction(dt);
     stepBall(dt);
+    ballDeflect();
     stepReferee(dt);
+    updatePowerBars(dt);
+    updateLandMarker();
     timeLeft-=rdt;
     if(timeLeft<=0){ timeLeft=0; running=false; endMatch(); }
     document.getElementById('tim').textContent=fmt(timeLeft);
