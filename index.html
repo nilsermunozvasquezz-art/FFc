@@ -530,6 +530,9 @@ let owner=null;                   // player object holding ball, or null
 let teamHasBall=false;            // true if blue owns
 let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
 let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='', setPieceTaker=null, setPieceGK=false;   // set-piece state
+let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then the restart is set up
+function scheduleRestart(delay, label, fn){ if(deadTimer>0||throwTimer>0||kickoffHold>0) return;
+  deadTimer=delay; deadAction=fn; owner=null; setPieceLabel=label; }
 
 const moveDir=new THREE.Vector2();   // joystick
 let sprint=false;
@@ -540,14 +543,14 @@ function kickoff(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=0; throwTimer=0; setPieceTaker=null;
+  ctrl=1; owner=null; kickoffHold=0; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;
 }
 // post-goal restart: line both teams up, then kick off after a short pause
 function kickoffRestart(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=1.8; throwTimer=0; setPieceTaker=null;  // hold in formation, then play
+  ctrl=1; owner=null; kickoffHold=1.8; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // hold in formation, then play
 }
 // hand the kickoff to the kicking team's striker; you (or the rival AI) play it out
 function kickoffBegin(){
@@ -788,8 +791,14 @@ function gkPass(p){
    power (0.25..1, default 1) scales how hard it is struck. */
 function passBall(p,target,power){
   power=(power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
-  // offside: a forward pass to a teammate beyond the line is whistled (not on throw-ins)
-  if(throwTimer<=0 && isOffside(target,p.team)){ p.kickCd=0.4; owner=null; offsideCall(p.team,target.pos); return; }
+  // offside: flag goes up now, the pass still runs on, then it's whistled back for the free kick
+  if(throwTimer<=0 && deadTimer<=0 && isOffside(target,p.team)){
+    let ls=linesmen[0]; linesmen.forEach(l=>{ if(Math.abs(l.side*HALF_W-target.pos.x)<Math.abs(ls.side*HALF_W-target.pos.x)) ls=l; });
+    ls.flagUp=2.6;
+    const atk=p.team, spot={x:target.pos.x, z:target.pos.z};
+    scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
+    // fall through and play the pass so the ball keeps rolling toward the runner
+  }
   // lead a moving receiver so the ball arrives at their feet
   const rough=ball.position.distanceTo(target.pos);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(rough/26,0,0.5)):new THREE.Vector3();
@@ -857,8 +866,9 @@ function resolveTackles(){
         if(red){ s.sentOff=true; if(owner===s) owner=null;      // red card -> off the pitch
           if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
         }
-        // free kick to the fouled team (protected window, taken with PASE)
-        awardSetPiece(o.team, o.pos.x, o.pos.z, 'TIRO LIBRE');
+        // let the ball run on a moment, then whistle the free kick to the fouled team
+        const ft=o.team, fx=o.pos.x, fz=o.pos.z;
+        scheduleRestart(1.3, 'TIRO LIBRE', ()=>awardSetPiece(ft, fx, fz, 'TIRO LIBRE'));
         s.slide=0; s.slideCd=1.8;
         return;
       }
@@ -966,6 +976,11 @@ function stepPlayer(p,dt){
     // both teams wait in their formation spots before the kickoff
     desired.copy(p.base).sub(p.pos).setY(0);
     if(desired.lengthSq()<0.04) desired.set(0,0,0);
+  }else if(deadTimer>0){
+    // dead ball after a whistle: ease back toward formation, nobody chases
+    const f=FORM[p.team][p.idx];
+    desired.set(f[0]-p.pos.x, 0, f[1]*0.8 - p.pos.z);
+    if(desired.lengthSq()<0.25) desired.set(0,0,0);
   }else if(isCtrl){
     keyDir();
     // side camera: screen-right = world -Z, screen-up = world -X
@@ -1064,6 +1079,7 @@ function stepPlayer(p,dt){
 
   // speed
   let spd = p.gk?7.8:(isCtrl?(sprint?13:9.5):(p.team===1?9.7:8.8));
+  if(deadTimer>0) spd=Math.min(spd,4.5);    // relaxed jog while the ball is dead
   if(p.slide>0) spd=15;
   if((p.dive||0)>0) spd=Math.max(spd,19);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
@@ -1108,6 +1124,7 @@ function stepPlayer(p,dt){
 }
 
 function playerBallInteraction(dt){
+  if(deadTimer>0){ owner=null; teamHasBall=false; return; }   // dead ball: no one controls it
   // find nearest player to ball
   let near=null,nd=1e9;
   players.forEach(p=>{if(p.sentOff)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
@@ -1198,20 +1215,22 @@ function stepBall(dt){
   }else{
     const fr=Math.pow(0.85,dt); ballVel.x*=fr; ballVel.z*=fr;   // air drag
   }
-  // sideline out of play -> throw-in for the other team
+  // sideline out of play -> throw-in (let it roll out, then restart)
   if(Math.abs(ball.position.x)>HALF_W && Math.abs(ball.position.z)<HALF_L
-     && throwTimer<=0 && kickoffHold<=0){
-    setupThrow(ball.position.x>0?1:-1, ball.position.z);
+     && deadTimer<=0 && throwTimer<=0 && kickoffHold<=0){
+    const sz=ball.position.z, side=ball.position.x>0?1:-1;
+    scheduleRestart(1.3, 'SAQUE DE BANDA', ()=>setupThrow(side, sz));
   }
-  // goals
-  if(Math.abs(ball.position.x)<GOAL_W/2 && ball.position.y<GOAL_H){
+  // goals (not while the ball is dead after a whistle)
+  if(deadTimer<=0 && Math.abs(ball.position.x)<GOAL_W/2 && ball.position.y<GOAL_H){
     if(ball.position.z> HALF_L){ doGoal(0); }         // into red goal (+Z) -> blue scores
     else if(ball.position.z< -HALF_L){ doGoal(1); }   // into blue goal -> red scores
   }
-  // out over an end line (no goal) -> goal kick for that end's team
-  if(Math.abs(ball.position.z)>HALF_L && throwTimer<=0 && kickoffHold<=0
+  // out over an end line (no goal) -> goal kick
+  if(Math.abs(ball.position.z)>HALF_L && deadTimer<=0 && throwTimer<=0 && kickoffHold<=0
      && !(Math.abs(ball.position.x)<GOAL_W/2 && ball.position.y<GOAL_H)){
-    setupGoalKick(ball.position.z>0 ? 1 : 0);
+    const tm=ball.position.z>0 ? 1 : 0;
+    scheduleRestart(1.3, 'SAQUE DE META', ()=>setupGoalKick(tm));
   }
   bShadow.position.set(ball.position.x,0.03,ball.position.z);
   const sc=THREE.MathUtils.clamp(1.3-ball.position.y*0.12,0.5,1.3);
@@ -1327,12 +1346,12 @@ function drawMini(){
 const poss=document.getElementById('poss');
 const lA=document.getElementById('lA'),lB=document.getElementById('lB'),lC=document.getElementById('lC');
 const bA=document.getElementById('bA'),bB=document.getElementById('bB'),bC=document.getElementById('bC');
-let lastMode=null, lastThrow=false;
+let lastMode=null, lastThrow=false, lastDead=false;
 function updateButtons(){
-  const thr = throwTimer>0;
+  const thr = throwTimer>0, dead = deadTimer>0;
   const mode = teamHasBall?'atk':'def';
-  if(mode===lastMode && thr===lastThrow) return;
-  lastMode=mode; lastThrow=thr;
+  if(mode===lastMode && thr===lastThrow && dead===lastDead) return;
+  lastMode=mode; lastThrow=thr; lastDead=dead;
   if(mode==='atk'){
     lA.textContent='DISPARO'; lB.textContent='PASE'; lC.textContent='ELEVADO';
     poss.textContent='⚽ ATACANDO'; poss.style.color='#7fd3ff';
@@ -1340,7 +1359,8 @@ function updateButtons(){
     lA.textContent='BARRER'; lB.textContent='PRESIONAR'; lC.textContent='CAMBIAR';
     poss.textContent='🛡 DEFENDIENDO'; poss.style.color='#ffce6a';
   }
-  if(thr){ poss.textContent=(setPieceLabel==='FUERA DE JUEGO'?'🚩 ':'🫳 ')+setPieceLabel+' (PASE)'; poss.style.color='#9fe9ff'; }
+  if(deadTimer>0){ poss.textContent='📣 '+setPieceLabel; poss.style.color='#ffd24a'; }
+  else if(thr){ poss.textContent=(setPieceLabel==='FUERA DE JUEGO'?'🚩 ':'🫳 ')+setPieceLabel+' (PASE)'; poss.style.color='#9fe9ff'; }
 }
 
 /* ============ loop ============ */
@@ -1359,6 +1379,14 @@ function loop(now){
       ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
       stepReferee(dt); stepLinesmen(dt);
       if(kickoffHold<=0) kickoffBegin();
+    }else if(deadTimer>0){
+      // whistle blown: the ball keeps rolling while players settle, then the restart is set up
+      deadTimer-=dt; owner=null;
+      players.forEach(p=>stepPlayer(p,dt));
+      stepBall(dt); ballDeflect();
+      stepReferee(dt); stepLinesmen(dt);
+      updatePowerBars(dt); updateLandMarker();
+      if(deadTimer<=0){ const fn=deadAction; deadAction=null; if(fn)fn(); }
     }else{
       if(pressTimer>0)pressTimer-=dt;
       if(throwTimer>0){
