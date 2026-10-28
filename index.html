@@ -522,6 +522,12 @@ function nearestToBall(team,excludeGK){
     const d=p.pos.distanceTo(ball.position); if(d<bd){bd=d;best=p;}});
   return best;
 }
+// how many same-team outfielders are strictly closer to the ball than p (0 = nearest)
+function ballRank(p){
+  const d=p.pos.distanceTo(ball.position); let r=0;
+  players.forEach(q=>{ if(q.team===p.team&&!q.gk&&q!==p && q.pos.distanceTo(ball.position)<d) r++; });
+  return r;
+}
 function aimDir(p){
   // joystick direction (side-camera mapped) if pushed, else toward opponent goal
   if(moveDir.lengthSq()>0.05) return new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
@@ -584,26 +590,23 @@ function cpuTryKick(p){
   if(p.kickCd>0) return false;
   const goal=new THREE.Vector3(0,0,-HALF_L);          // blue goal (cpu attacks -Z)
   const dg=ball.position.distanceTo(goal);
-  if(ball.position.z > -HALF_L+18) return false;       // not near the area yet
-  // good shooting chance -> shoot
-  if(dg<17 && Math.abs(ball.position.x)<GOAL_W+2){
-    const tx=(Math.random()-.5)*GOAL_W*0.7;
+  if(ball.position.z > -HALF_L+22) return false;       // not near the area yet
+  // good shooting chance -> shoot for a corner
+  if(dg<21 && Math.abs(ball.position.x)<GOAL_W+3){
+    const tx=(Math.random()-.5)*GOAL_W*0.8;
     const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0).normalize();
-    ballVel.copy(dir).multiplyScalar(30); ballVel.y=4; p.kickCd=.6; owner=null; return true;
+    ballVel.copy(dir).multiplyScalar(30); ballVel.y=3.5; p.kickCd=.6; owner=null; return true;
   }
-  // otherwise pass to the most advanced open teammate
+  // otherwise pass forward to an advanced open teammate (precise, auto ground/loft)
   let best=null,bz=1e9;
   players.forEach(q=>{
     if(q.team!==1||q.gk||q===p) return;
-    if(q.pos.z < bz && q.pos.z < p.pos.z-2){
+    if(q.pos.z < bz && q.pos.z < p.pos.z-1.5){
       let md=1e9; players.forEach(d=>{if(d.team===0&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
-      if(md>3){ bz=q.pos.z; best=q; }
+      if(md>2.5){ bz=q.pos.z; best=q; }
     }
   });
-  if(best){
-    const dir=best.pos.clone().sub(ball.position).setY(0); const dist=dir.length(); dir.normalize();
-    ballVel.copy(dir).multiplyScalar(Math.min(26,dist*2.2)); ballVel.y=.6; p.kickCd=.7; owner=null; return true;
-  }
+  if(best){ passBall(p,best); return true; }
   return false;
 }
 
@@ -732,6 +735,24 @@ function pressSteal(){
   }
 }
 
+/* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
+function cpuSteal(){
+  if(!(owner && owner.team===0)) return;
+  const carrier=owner;
+  for(const p of players){
+    if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0) continue;
+    if(p.pos.distanceTo(carrier.pos)<1.35){
+      const away=p.pos.clone().sub(carrier.pos).setY(0);
+      if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
+      away.normalize();
+      ball.position.set(p.pos.x+away.x*0.7,BALL_R,p.pos.z+away.z*0.7);
+      ballVel.copy(away).multiplyScalar(4);
+      owner=p; p.stealCd=0.9;
+      break;
+    }
+  }
+}
+
 /* ============ update ============ */
 function stepPlayer(p,dt){
   // movement target
@@ -790,24 +811,32 @@ function stepPlayer(p,dt){
     const myChaser = p.team===0?chaser0:chaser1;
     const weHave = owner && owner.team===p.team;
     const base=FORM[p.team][p.idx];
-    // shift formation toward ball
-    let bx=base[0]+ball.position.x*.3;
-    let bz=base[1]+ (weHave? (p.team===0?8:-8):0) + ball.position.z*.25;
+    // shift formation: push forwards into attack when we have the ball, drop back otherwise
+    let bx=base[0]+ball.position.x*.35;
+    let bz;
+    if(weHave){
+      const deep=p.idx>=2;                                   // wingers push deep
+      const fwd=p.team===0?(deep?30:12):(deep?-30:-12);
+      bz=fwd + ball.position.z*0.15;
+    }else{
+      bz=base[1]*0.7 + ball.position.z*0.3;                  // recover toward own half
+    }
+    bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
     if(owner===p){
       // this AI player has the ball: shoot near box, else pass (high/low), else dribble
       const gz=p.team===0?HALF_L:-HALF_L;
       let acted=false;
       if(p.team===1) acted=cpuTryKick(p);            // shoot/pass near the opponent box
-      if(!acted && (p.holdT||0)>0.8) acted=aiTryPass(p);   // open-play pass to a teammate
+      if(!acted && (p.holdT||0)>(p.team===1?0.55:0.8)) acted=aiTryPass(p);  // build play with passes
       if(acted) desired.set(0,0,0);
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
-    }else if(p===myChaser && !weHave){
-      // chase the ball
+    }else if(!weHave && ballRank(p)<=1){
+      // the two nearest defenders pursue the ball together
       desired.copy(ball.position).sub(p.pos).setY(0);
-      // cpu slide-tackles the human carrier when right on top of them
+      // cpu slide-tackles the human carrier when close
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0
-         && p.pos.distanceTo(owner.pos)<2.3 && Math.random()<0.04){
-        p.slide=0.5; p.slideCd=1.8;
+         && p.pos.distanceTo(owner.pos)<2.4 && Math.random()<0.05){
+        p.slide=0.6; p.slideCd=1.8;
       }
     }else{
       desired.set(bx-p.pos.x,0,bz-p.pos.z);
@@ -840,6 +869,7 @@ function stepPlayer(p,dt){
   if(p.slideCd>0)p.slideCd-=dt;
   if(p.kickCd>0)p.kickCd-=dt;
   if((p.dive||0)>0)p.dive-=dt;
+  if((p.stealCd||0)>0)p.stealCd-=dt;
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else p.holdT=0;  // AI possession timer
 
   // apply to mesh
@@ -1025,6 +1055,7 @@ function loop(now){
     players.forEach(p=>stepPlayer(p,dt));
     resolveTackles();
     pressSteal();
+    cpuSteal();
     playerBallInteraction(dt);
     stepBall(dt);
     stepReferee(dt);
