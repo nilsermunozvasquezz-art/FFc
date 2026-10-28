@@ -101,6 +101,12 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
   font-size:13px;font-weight:800;letter-spacing:.5px}
 #camRange{width:100%;accent-color:#19c268;height:26px}
 .hint{display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-bottom:4px}
+
+/* ===== card flash ===== */
+#card{position:fixed;inset:0;z-index:19;display:none;place-items:center;pointer-events:none}
+#card .cwrap{display:flex;flex-direction:column;align-items:center;gap:10px;animation:pop .4s ease}
+#card .crd{width:54px;height:76px;border-radius:7px;box-shadow:0 6px 20px rgba(0,0,0,.6);transform:rotate(-9deg)}
+#card .ctx{font-size:22px;font-weight:900;letter-spacing:2px;text-shadow:0 3px 14px #000}
 </style>
 
 <div id="rot"><b>📱</b>Gira el teléfono<br>en horizontal</div>
@@ -129,6 +135,8 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 </div>
 
 <div id="goal"><div class="g">¡GOOOL!</div></div>
+
+<div id="card"><div class="cwrap"><div class="crd" id="crd"></div><div class="ctx" id="ctx"></div></div></div>
 
 <div id="menu">
   <div class="panel" id="panelMain">
@@ -355,6 +363,11 @@ function resetPositions(kickTeam){
 const ref = makePlayer(0x111111,0x111111,0xe0b080);
 ref.userData.ring.visible=false;
 const refPos=new THREE.Vector3(6,0,6);
+// card the referee raises on a foul
+const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.6,0.05),
+  new THREE.MeshBasicMaterial({color:0xffd21a}));
+refCard.position.set(0.62,2.45,0); refCard.visible=false; ref.add(refCard);
+let cardTimer=0;
 
 /* ball */
 const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,18,18),
@@ -485,6 +498,20 @@ function aimDir(p){
   const gz = p.team===0?HALF_L+2:-HALF_L-2;
   return new THREE.Vector3(0,0,gz).sub(p.pos).setY(0).normalize();
 }
+// best teammate to pass to: ahead toward goal, open, biased by joystick aim
+function passTarget(pl){
+  const dir=pl.team===0?1:-1; let best=null,bb=-1e9;
+  const aim=aimDir(pl);
+  players.forEach(q=>{
+    if(q.team!==pl.team||q.gk||q===pl) return;
+    const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1)return; to.normalize();
+    let md=1e9; players.forEach(d=>{if(d.team!==pl.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
+    const ahead=(q.pos.z-pl.pos.z)*dir;
+    const sc=ahead*1.2 + to.dot(aim)*5 + (md>4?3:0) - dist*0.12;
+    if(sc>bb){bb=sc;best=q;}
+  });
+  return best;
+}
 function doAction(which){
   if(!running||paused) return;
   const p=ctrlPlayer();
@@ -497,14 +524,18 @@ function doAction(which){
     }
     const pl=ctrlPlayer();
     if(pl.kickCd>0) return;
+    if(which==='B'){            // PASE to a teammate (auto ground/loft), then follow receiver
+      const tgt=passTarget(pl);
+      if(tgt){ passBall(pl,tgt); ctrl=players.indexOf(tgt); return; }
+      // no teammate -> fall back to a ground kick forward
+      ballVel.copy(aimDir(pl)).multiplyScalar(22); ballVel.y=0.5; pl.kickCd=0.3; owner=null; return;
+    }
     const dir=aimDir(pl); pl.kickCd=0.3; owner=null;
     if(which==='A'){            // DISPARO fuerte -> toward goal
       const gz=pl.team===0?HALF_L:-HALF_L;
       const target=new THREE.Vector3((Math.random()-.5)*GOAL_W*.7,0,gz).sub(ball.position).setY(0).normalize();
       ballVel.copy(target).multiplyScalar(34); ballVel.y=4.5;
-    }else if(which==='B'){      // CHUTE raso (ground pass/shot)
-      ballVel.copy(dir).multiplyScalar(24); ballVel.y=0.5;
-    }else{                      // CHUTE elevado (lob)
+    }else{                      // CHUTE elevado (lob/cross)
       ballVel.copy(dir).multiplyScalar(18); ballVel.y=10;
     }
   }else{
@@ -615,8 +646,22 @@ function resolveTackles(){
       if(o.team===s.team || (o.fall||0)>0) return;
       if(s.pos.distanceTo(o.pos) > 1.7) return;
       o.fall=1.1; o.vel.set(0,0,0);              // opponent falls
-      if(owner===o || ball.position.distanceTo(o.pos)<3){
-        // put the ball on the tackler's side (away from the fallen victim) so it stays won
+      const hadBall = (owner===o || ball.position.distanceTo(o.pos)<3);
+      const foul = Math.random() < (hadBall?0.3:0.6);   // mistimed tackles foul more
+      if(foul){
+        // referee books the tackler; free kick to the fouled team
+        showCard(Math.random()<0.17?'red':'yellow');
+        ballVel.set(0,0,0); ball.position.set(o.pos.x,BALL_R,o.pos.z);
+        let rec=null,rd=1e9;
+        players.forEach(q=>{ if(q.team===o.team&&!q.gk&&(q.fall||0)<=0){
+          const d=q.pos.distanceTo(o.pos); if(d<rd){rd=d;rec=q;} }});
+        owner=rec||null;
+        if(rec && rec.team===0) ctrl=players.indexOf(rec);
+        s.slide=0; s.slideCd=1.8;
+        return;
+      }
+      if(hadBall){
+        // clean tackle: put the ball on the tackler's side (away from the victim) so it stays won
         const away=s.pos.clone().sub(o.pos).setY(0);
         if(away.lengthSq()<0.01) away.set(Math.sin(s.heading),0,Math.cos(s.heading));
         away.normalize();
@@ -818,18 +863,37 @@ function doGoal(team){
     kickoff(team===0?1:0); running=true; },1400);
 }
 
+let foulSpot=new THREE.Vector3();
+function showCard(color){
+  cardTimer=1.8;
+  refCard.material.color.set(color==='red'?0xff2d2d:0xffd21a);
+  refCard.visible=true;
+  foulSpot.copy(ball.position); foulSpot.y=0;
+  const c=document.getElementById('card'), crd=document.getElementById('crd'), ctx=document.getElementById('ctx');
+  crd.style.background=color==='red'?'#e01414':'#ffd21a';
+  ctx.textContent=color==='red'?'TARJETA ROJA':'TARJETA AMARILLA';
+  ctx.style.color=color==='red'?'#ff6a6a':'#ffe14a';
+  c.style.display='grid';
+  clearTimeout(showCard._t); showCard._t=setTimeout(()=>{c.style.display='none';},1500);
+}
 function stepReferee(dt){
-  // follow play from a diagonal offset, stay out of the way
-  const want=ball.position.clone().add(new THREE.Vector3(7,0,-6));
+  // when showing a card, hurry to the foul spot; else follow play from a diagonal offset
+  const booking = cardTimer>0;
+  const want = booking
+    ? foulSpot.clone().add(new THREE.Vector3(2.2,0,-2.2))
+    : ball.position.clone().add(new THREE.Vector3(7,0,-6));
   want.x=THREE.MathUtils.clamp(want.x,-HALF_W+2,HALF_W-2);
   want.z=THREE.MathUtils.clamp(want.z,-HALF_L+2,HALF_L-2);
-  refPos.lerp(want,dt*1.5);
+  refPos.lerp(want,dt*(booking?3:1.5));
   ref.position.set(refPos.x,0,refPos.z);
-  const d=want.clone().sub(refPos);
+  const d=(booking?foulSpot.clone():want).sub(refPos);
   if(d.lengthSq()>0.01) ref.rotation.y=Math.atan2(d.x,d.z);
   const u=ref.userData; u.phase+=dt*6;
   const sw=Math.sin(u.phase)*0.4;
-  u.lLeg.rotation.x=sw;u.rLeg.rotation.x=-sw;u.lArm.rotation.x=-sw*.8;u.rArm.rotation.x=sw*.8;
+  u.lLeg.rotation.x=sw;u.rLeg.rotation.x=-sw;
+  if(booking){ u.rArm.rotation.x=-2.6; u.lArm.rotation.x=0; }   // arm raised with the card
+  else { u.lArm.rotation.x=-sw*.8; u.rArm.rotation.x=sw*.8; }
+  if(cardTimer>0){ cardTimer-=dt; if(cardTimer<=0) refCard.visible=false; }
 }
 
 /* ============ camera (DLS side broadcast — goals left & right) ============ */
@@ -877,7 +941,7 @@ function updateButtons(){
   lastMode=mode;
   if(mode==='atk'){
     poss.textContent='⚽ ATACANDO'; poss.style.color='#7fd3ff';
-    lA.textContent='DISPARO'; lB.textContent='CHUTE RASO'; lC.textContent='CHUTE ELEVADO';
+    lA.textContent='DISPARO'; lB.textContent='PASE'; lC.textContent='CHUTE ELEVADO';
     bA.style.background='radial-gradient(circle at 35% 30%,#ff5b60,#c01d22)';
     bB.style.background='radial-gradient(circle at 35% 30%,#3f8bff,#1348c0)';
     bC.style.background='radial-gradient(circle at 35% 30%,#3fe08b,#149c52)';
