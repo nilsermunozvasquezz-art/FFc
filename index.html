@@ -561,6 +561,30 @@ function gkPass(p){
   if(p.team===0) ctrl=players.indexOf(best);     // hand control to the receiver
 }
 
+/* Slide tackles: a sliding player that reaches an opponent knocks them down,
+   and steals the ball if that opponent had it (or it's loose nearby). */
+function resolveTackles(){
+  players.forEach(s=>{
+    if(s.slide<=0 || (s.fall||0)>0) return;
+    players.forEach(o=>{
+      if(o.team===s.team || (o.fall||0)>0) return;
+      if(s.pos.distanceTo(o.pos) > 1.7) return;
+      o.fall=1.1; o.vel.set(0,0,0);              // opponent falls
+      if(owner===o || ball.position.distanceTo(o.pos)<3){
+        // put the ball on the tackler's side (away from the fallen victim) so it stays won
+        const away=s.pos.clone().sub(o.pos).setY(0);
+        if(away.lengthSq()<0.01) away.set(Math.sin(s.heading),0,Math.cos(s.heading));
+        away.normalize();
+        ball.position.set(s.pos.x+away.x*0.7,BALL_R,s.pos.z+away.z*0.7);
+        ballVel.copy(away).multiplyScalar(3);
+        owner=s;
+        if(s.team===0) ctrl=players.indexOf(s); // keep control on the tackler
+      }
+      s.slide=0; s.slideCd=1.4;
+    });
+  });
+}
+
 /* ============ update ============ */
 function stepPlayer(p,dt){
   // movement target
@@ -568,16 +592,39 @@ function stepPlayer(p,dt){
   const isCtrl = (p===ctrlPlayer());
   const chaser0 = nearestToBall(0,true), chaser1 = nearestToBall(1,true);
 
+  // knocked down by a tackle -> lie on the ground, can't move
+  if((p.fall||0)>0){
+    p.fall-=dt; p.vel.multiplyScalar(0.82); p.pos.addScaledVector(p.vel,dt);
+    const m=p.mesh; m.position.set(p.pos.x,0.45,p.pos.z);
+    m.rotation.set(-1.35,p.heading,0);
+    m.userData.ring.visible=(p===ctrlPlayer());
+    if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
+    return;
+  }
+
   if(isCtrl){
     keyDir();
     // side camera: screen-right = world -Z, screen-up = world -X
     desired.set(moveDir.y, 0, -moveDir.x);
   }else if(p.gk){
-    // goalkeeper: track ball laterally on own line, rush if close
+    // goalkeeper: track ball; DIVE to predicted spot when a shot is incoming
     const gz=p.team===0?-HALF_L+1.5:HALF_L-1.5;
+    const goalLineZ=p.team===0?-HALF_L:HALF_L;
     let tx=THREE.MathUtils.clamp(ball.position.x*.6,-GOAL_W/2-1,GOAL_W/2+1);
     let tz=gz;
-    const near=ball.position.distanceTo(new THREE.Vector3(0,0,gz))<11
+    const toOwnGoal=(p.team===0&&ballVel.z<-5)||(p.team===1&&ballVel.z>5);
+    if(toOwnGoal && ballVel.z!==0){
+      const tTo=(goalLineZ-ball.position.z)/ballVel.z;
+      if(tTo>0 && tTo<1.5){
+        const predX=ball.position.x+ballVel.x*tTo;
+        if(Math.abs(predX)<GOAL_W/2+2.5){
+          tx=THREE.MathUtils.clamp(predX,-GOAL_W/2-1.8,GOAL_W/2+1.8);
+          tz=gz;
+          if(Math.abs(predX-p.pos.x)>1.2) p.dive=Math.max(p.dive||0,0.45);
+        }
+      }
+    }
+    const near=!toOwnGoal && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<11
       && Math.abs(ball.position.x)<GOAL_W/2+3
       && (p.team===0?ball.position.z<gz+9:ball.position.z>gz-9);
     if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-6,p.team===0?gz+6:HALF_L-1);}
@@ -597,6 +644,11 @@ function stepPlayer(p,dt){
     if(p===myChaser && !weHave){
       // chase the ball
       desired.copy(ball.position).sub(p.pos).setY(0);
+      // cpu slide-tackles the human carrier when right on top of them
+      if(p.team===1 && p.slideCd<=0 && owner && owner.team===0
+         && p.pos.distanceTo(owner.pos)<2.3 && Math.random()<0.04){
+        p.slide=0.5; p.slideCd=1.8;
+      }
     }else if(p===myChaser && weHave && p.team===1){
       // cpu ball carrier: near the box -> shoot or pass; else dribble to goal
       if(owner===p && cpuTryKick(p)){
@@ -617,6 +669,7 @@ function stepPlayer(p,dt){
   // speed
   let spd = p.gk?7.5:(isCtrl?(sprint?13:9.5):(p.team===1?9.2:8.8));
   if(p.slide>0) spd=15;
+  if((p.dive||0)>0) spd=Math.max(spd,17);   // keeper dive lunge
   if(desired.lengthSq()>0.001){
     desired.normalize();
     p.heading=Math.atan2(desired.x,desired.z);
@@ -632,6 +685,7 @@ function stepPlayer(p,dt){
   if(p.slide>0)p.slide-=dt;
   if(p.slideCd>0)p.slideCd-=dt;
   if(p.kickCd>0)p.kickCd-=dt;
+  if((p.dive||0)>0)p.dive-=dt;
 
   // apply to mesh
   const m=p.mesh; m.position.set(p.pos.x,0,p.pos.z);
@@ -641,7 +695,9 @@ function stepPlayer(p,dt){
   const sw=Math.sin(u.phase)*Math.min(.9,p.speed*.08);
   u.lLeg.rotation.x=sw; u.rLeg.rotation.x=-sw;
   u.lArm.rotation.x=-sw*.8; u.rArm.rotation.x=sw*.8;
-  if(p.slide>0){ m.rotation.x=-0.6; m.position.y=-0.2; } else { m.rotation.x=0; }
+  if(p.slide>0){ m.rotation.x=-0.6; m.rotation.z=0; m.position.y=-0.2; }
+  else if((p.dive||0)>0){ const s=Math.sign(p.vel.x)||1; m.rotation.x=0; m.rotation.z=-s*1.15; m.position.y=0.55; }
+  else { m.rotation.x=0; m.rotation.z=0; m.position.y=0; }
   u.ring.visible=(p===ctrlPlayer());
 }
 
@@ -655,6 +711,12 @@ function playerBallInteraction(dt){
   }else if(nd>POSSESS+1.2){
     owner=null;
   }
+  // keeper catch: grab when horizontally close and ball not too high (works mid-dive)
+  players.forEach(p=>{
+    if(!p.gk||(p.fall||0)>0) return;
+    const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
+    if(Math.hypot(dx,dz)<1.9 && ball.position.y<2.3) owner=p;
+  });
   teamHasBall = !!(owner && owner.team===0);
 
   // dribble: keep ball ahead of owner if ball slow & grounded
@@ -792,6 +854,7 @@ function loop(now){
   if(running && !paused){
     if(pressTimer>0)pressTimer-=dt;
     players.forEach(p=>stepPlayer(p,dt));
+    resolveTackles();
     playerBallInteraction(dt);
     stepBall(dt);
     stepReferee(dt);
