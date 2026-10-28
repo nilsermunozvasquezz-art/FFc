@@ -170,7 +170,7 @@ const GOAL_W = 13, GOAL_H = 4.2, GOAL_D = 2.2;
 const BALL_R = 0.42, P_R = 0.9;
 const POSSESS = 2.0;                       // distance to control ball
 const MATCH_SECS = 300;
-const TEAMS = 2, PER_TEAM = 4;             // 1 GK + 3 outfield
+const TEAMS = 2, PER_TEAM = 5;             // 1 GK + 4 outfield
 const GAME_SPEED = 0.78;                    // <1 slows the whole match for a calmer pace
 
 /* ============ renderer / scene ============ */
@@ -372,18 +372,19 @@ function spawnTeam(t){
 }
 spawnTeam(0); spawnTeam(1);
 
-/* formations (blue attacks +Z; red attacks -Z) */
+/* formations (blue attacks +Z; red attacks -Z) : gk, def, LM, RM, ST */
 const FORM=[
-  [[0,-HALF_L+2],[0,-15],[-12,-2],[12,-2]],      // blue: gk,def,LW,RW
-  [[0, HALF_L-2],[0, 15],[ 12, 2],[-12, 2]]      // red mirrored
+  [[0,-HALF_L+2],[0,-18],[-13,-4],[13,-4],[0,6]],     // blue
+  [[0, HALF_L-2],[0, 18],[ 13, 4],[-13, 4],[0,-6]]    // red mirrored
 ];
+const STRIKER=PER_TEAM-1;                              // last index = striker
 function resetPositions(kickTeam){
   players.forEach(p=>{
     const f=FORM[p.team][p.idx];
     p.base.set(f[0],0,f[1]);
     p.pos.copy(p.base); p.vel.set(0,0,0);
-    // the kicking team's striker starts at center
-    if(!p.gk && p.idx===2 && p.team===kickTeam) p.pos.set(p.team===0?-1.5:1.5,0,0);
+    // the kicking team's striker starts at center for the kickoff
+    if(!p.gk && p.idx===STRIKER && p.team===kickTeam) p.pos.set(p.team===0?-1.5:1.5,0,0);
     p.mesh.position.copy(p.pos);
     p.heading = p.team===0?0:Math.PI;
   });
@@ -470,7 +471,7 @@ let score=[0,0], timeLeft=MATCH_SECS, running=false, paused=false;
 let ctrl=1;                       // index into blue team (players[ctrl]) controlled
 let owner=null;                   // player object holding ball, or null
 let teamHasBall=false;            // true if blue owns
-let pressTimer=0, goalFlash=0, kickoffTeam=1;
+let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
 
 const moveDir=new THREE.Vector2();   // joystick
 let sprint=false;
@@ -481,7 +482,23 @@ function kickoff(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null;
+  ctrl=1; owner=null; kickoffHold=0;
+}
+// post-goal restart: line both teams up, then kick off after a short pause
+function kickoffRestart(team){
+  kickoffTeam=team;
+  resetPositions(team);
+  ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
+  ctrl=1; owner=null; kickoffHold=1.8;    // hold in formation, then play
+}
+// the striker taps the ball back to a teammate to start play
+function kickoffTap(){
+  const st=players.find(p=>p.team===kickoffTeam&&p.idx===STRIKER) || nearestToBall(kickoffTeam,true);
+  if(st){ owner=st; st.holdT=0;
+    const mate=players.find(p=>p.team===kickoffTeam&&!p.gk&&p!==st);
+    if(mate) passBall(st,mate);
+    if(kickoffTeam===0 && st) ctrl=players.indexOf(st);
+  }
 }
 
 /* ============ input ============ */
@@ -840,7 +857,11 @@ function stepPlayer(p,dt){
     return;
   }
 
-  if(isCtrl){
+  if(kickoffHold>0){
+    // both teams wait in their formation spots before the kickoff
+    desired.copy(p.base).sub(p.pos).setY(0);
+    if(desired.lengthSq()<0.04) desired.set(0,0,0);
+  }else if(isCtrl){
     keyDir();
     // side camera: screen-right = world -Z, screen-up = world -X
     desired.set(moveDir.y, 0, -moveDir.x);
@@ -850,27 +871,28 @@ function stepPlayer(p,dt){
       desired.copy(tgt).sub(p.pos).setY(0);
     }
   }else if(p.gk){
-    // goalkeeper: track ball; DIVE to predicted spot when a shot is incoming
-    const gz=p.team===0?-HALF_L+1.5:HALF_L-1.5;
+    // goalkeeper: hold the line and track the ball; DIVE to the predicted shot spot
+    const gz=p.team===0?-HALF_L+1.2:HALF_L-1.2;
     const goalLineZ=p.team===0?-HALF_L:HALF_L;
-    let tx=THREE.MathUtils.clamp(ball.position.x*.6,-GOAL_W/2-1,GOAL_W/2+1);
+    let tx=THREE.MathUtils.clamp(ball.position.x*.9,-GOAL_W/2-0.3,GOAL_W/2+0.3);  // stay centered on the ball
     let tz=gz;
-    const toOwnGoal=(p.team===0&&ballVel.z<-3.5)||(p.team===1&&ballVel.z>3.5);
+    const toOwnGoal=(p.team===0&&ballVel.z<-3)||(p.team===1&&ballVel.z>3);
     if(toOwnGoal && ballVel.z!==0){
       const tTo=(goalLineZ-ball.position.z)/ballVel.z;
-      if(tTo>0 && tTo<2.0){                        // react to shots from further out
+      if(tTo>0 && tTo<2.3){                        // react to shots from much further out
         const predX=ball.position.x+ballVel.x*tTo;
-        if(Math.abs(predX)<GOAL_W/2+3){
-          tx=THREE.MathUtils.clamp(predX,-GOAL_W/2-2.2,GOAL_W/2+2.2);
+        if(Math.abs(predX)<GOAL_W/2+3.5){
+          tx=THREE.MathUtils.clamp(predX,-GOAL_W/2-2.5,GOAL_W/2+2.5);
           tz=gz;
-          if(Math.abs(predX-p.pos.x)>0.8) p.dive=Math.max(p.dive||0,0.5);  // dive sooner
+          if(Math.abs(predX-p.pos.x)>0.6) p.dive=Math.max(p.dive||0,0.5);  // dive readily
         }
       }
     }
-    const near=!toOwnGoal && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<11
-      && Math.abs(ball.position.x)<GOAL_W/2+3
-      && (p.team===0?ball.position.z<gz+9:ball.position.z>gz-9);
-    if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-6,p.team===0?gz+6:HALF_L-1);}
+    // only rush out for a loose ball very close to goal (don't abandon the line)
+    const near=!toOwnGoal && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<7
+      && Math.abs(ball.position.x)<GOAL_W/2+2
+      && (p.team===0?ball.position.z<gz+6:ball.position.z>gz-6);
+    if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-3,p.team===0?gz+3:HALF_L-1);}
     desired.set(tx-p.pos.x,0,tz-p.pos.z);
     if(owner===p){                     // GK caught the ball -> hold briefly, then pass out
       p.gkHold=(p.gkHold||0)+dt;
@@ -885,8 +907,8 @@ function stepPlayer(p,dt){
     let bx=base[0]+ball.position.x*.35;
     let bz;
     if(weHave){
-      const deep=p.idx>=2;                                   // wingers push deep
-      const fwd=p.team===0?(deep?30:12):(deep?-30:-12);
+      const deep=p.idx>=3;                                   // winger + striker push deep
+      const fwd=p.team===0?(deep?30:14):(deep?-30:-14);
       bz=fwd + ball.position.z*0.15;
     }else{
       bz=base[1]*0.7 + ball.position.z*0.3;                  // recover toward own half
@@ -973,7 +995,7 @@ function playerBallInteraction(dt){
   players.forEach(p=>{
     if(!p.gk||(p.fall||0)>0) return;
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
-    if(Math.hypot(dx,dz)<2.3 && ball.position.y<2.7) owner=p;   // wider, higher reach
+    if(Math.hypot(dx,dz)<2.6 && ball.position.y<3.0) owner=p;   // wider, higher reach
   });
   teamHasBall = !!(owner && owner.team===0);
 
@@ -1028,7 +1050,7 @@ function doGoal(team){
   document.getElementById('goal').style.display='grid';
   running=false;
   setTimeout(()=>{ document.getElementById('goal').style.display='none';
-    kickoff(team===0?1:0); running=true; },1400);
+    kickoffRestart(team===0?1:0); running=true; },1600);   // lined up, then a slow kickoff
 }
 
 let foulSpot=new THREE.Vector3();
@@ -1125,17 +1147,26 @@ function loop(now){
   const dt=rdt*GAME_SPEED;                 // slowed simulation for a calmer pace
 
   if(running && !paused){
-    if(pressTimer>0)pressTimer-=dt;
-    players.forEach(p=>stepPlayer(p,dt));
-    resolveTackles();
-    pressSteal();
-    cpuSteal();
-    playerBallInteraction(dt);
-    stepBall(dt);
-    ballDeflect();
-    stepReferee(dt);
-    updatePowerBars(dt);
-    updateLandMarker();
+    if(kickoffHold>0){
+      // pre-kickoff: teams settle in formation, ball waits on the centre spot
+      kickoffHold-=dt;
+      players.forEach(p=>stepPlayer(p,dt));
+      ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
+      stepReferee(dt);
+      if(kickoffHold<=0) kickoffTap();
+    }else{
+      if(pressTimer>0)pressTimer-=dt;
+      players.forEach(p=>stepPlayer(p,dt));
+      resolveTackles();
+      pressSteal();
+      cpuSteal();
+      playerBallInteraction(dt);
+      stepBall(dt);
+      ballDeflect();
+      stepReferee(dt);
+      updatePowerBars(dt);
+      updateLandMarker();
+    }
     timeLeft-=rdt;
     if(timeLeft<=0){ timeLeft=0; running=false; endMatch(); }
     document.getElementById('tim').textContent=fmt(timeLeft);
