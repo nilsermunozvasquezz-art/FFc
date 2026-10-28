@@ -564,6 +564,48 @@ function gkPass(p){
   if(p.team===0) ctrl=players.indexOf(best);         // hand control to the receiver
 }
 
+/* Pass the ball to a target teammate: lofted if a rival blocks the lane, else on the ground */
+function passBall(p,target){
+  const v=target.pos.clone().sub(ball.position).setY(0); const dist=v.length();
+  if(dist<1) return; v.normalize();
+  let blocked=false;                       // is an opponent in the passing lane?
+  players.forEach(o=>{
+    if(o.team===p.team||(o.fall||0)>0) return;
+    const rel=o.pos.clone().sub(ball.position).setY(0);
+    const along=rel.dot(v);
+    if(along>1.5 && along<dist-1.5){
+      const perp=rel.addScaledVector(v,-along).length();
+      if(perp<2.3) blocked=true;
+    }
+  });
+  if(blocked){                             // lob over
+    const T=THREE.MathUtils.clamp(dist/16,0.9,1.45);
+    ballVel.copy(v).multiplyScalar(dist/T*1.18); ballVel.y=26*T/2;
+  }else{                                   // ground pass
+    ballVel.copy(v).multiplyScalar(THREE.MathUtils.clamp(dist*1.6,14,26)); ballVel.y=0.6;
+  }
+  p.kickCd=0.9; p.holdT=0; owner=null;
+}
+
+/* AI open-play pass. Blue carriers feed the human; others find an advanced open mate. */
+function aiTryPass(p){
+  if(p.kickCd>0) return false;
+  let target=null;
+  if(p.team===0){ const h=ctrlPlayer(); if(h!==p && !h.gk) target=h; }
+  if(!target){
+    const dir=p.team===0?1:-1; let bb=-1e9;
+    players.forEach(q=>{
+      if(q.team!==p.team||q.gk||q===p) return;
+      let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
+      const sc=q.pos.z*dir + (md>4?3:0);
+      if(sc>bb){bb=sc;target=q;}
+    });
+  }
+  if(!target) return false;
+  passBall(p,target);
+  return true;
+}
+
 /* Slide tackles: a sliding player that reaches an opponent knocks them down,
    and steals the ball if that opponent had it (or it's loose nearby). */
 function resolveTackles(){
@@ -644,21 +686,21 @@ function stepPlayer(p,dt){
     // shift formation toward ball
     let bx=base[0]+ball.position.x*.3;
     let bz=base[1]+ (weHave? (p.team===0?8:-8):0) + ball.position.z*.25;
-    if(p===myChaser && !weHave){
+    if(owner===p){
+      // this AI player has the ball: shoot near box, else pass (high/low), else dribble
+      const gz=p.team===0?HALF_L:-HALF_L;
+      let acted=false;
+      if(p.team===1) acted=cpuTryKick(p);            // shoot/pass near the opponent box
+      if(!acted && (p.holdT||0)>0.8) acted=aiTryPass(p);   // open-play pass to a teammate
+      if(acted) desired.set(0,0,0);
+      else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
+    }else if(p===myChaser && !weHave){
       // chase the ball
       desired.copy(ball.position).sub(p.pos).setY(0);
       // cpu slide-tackles the human carrier when right on top of them
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0
          && p.pos.distanceTo(owner.pos)<2.3 && Math.random()<0.04){
         p.slide=0.5; p.slideCd=1.8;
-      }
-    }else if(p===myChaser && weHave && p.team===1){
-      // cpu ball carrier: near the box -> shoot or pass; else dribble to goal
-      if(owner===p && cpuTryKick(p)){
-        desired.set(0,0,0);
-      }else{
-        const gz=-HALF_L;
-        desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
       }
     }else{
       desired.set(bx-p.pos.x,0,bz-p.pos.z);
@@ -689,6 +731,7 @@ function stepPlayer(p,dt){
   if(p.slideCd>0)p.slideCd-=dt;
   if(p.kickCd>0)p.kickCd-=dt;
   if((p.dive||0)>0)p.dive-=dt;
+  if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else p.holdT=0;  // AI possession timer
 
   // apply to mesh
   const m=p.mesh; m.position.set(p.pos.x,0,p.pos.z);
