@@ -855,15 +855,15 @@ function stepPlayer(p,dt){
     const goalLineZ=p.team===0?-HALF_L:HALF_L;
     let tx=THREE.MathUtils.clamp(ball.position.x*.6,-GOAL_W/2-1,GOAL_W/2+1);
     let tz=gz;
-    const toOwnGoal=(p.team===0&&ballVel.z<-5)||(p.team===1&&ballVel.z>5);
+    const toOwnGoal=(p.team===0&&ballVel.z<-3.5)||(p.team===1&&ballVel.z>3.5);
     if(toOwnGoal && ballVel.z!==0){
       const tTo=(goalLineZ-ball.position.z)/ballVel.z;
-      if(tTo>0 && tTo<1.5){
+      if(tTo>0 && tTo<2.0){                        // react to shots from further out
         const predX=ball.position.x+ballVel.x*tTo;
-        if(Math.abs(predX)<GOAL_W/2+2.5){
-          tx=THREE.MathUtils.clamp(predX,-GOAL_W/2-1.8,GOAL_W/2+1.8);
+        if(Math.abs(predX)<GOAL_W/2+3){
+          tx=THREE.MathUtils.clamp(predX,-GOAL_W/2-2.2,GOAL_W/2+2.2);
           tz=gz;
-          if(Math.abs(predX-p.pos.x)>1.2) p.dive=Math.max(p.dive||0,0.45);
+          if(Math.abs(predX-p.pos.x)>0.8) p.dive=Math.max(p.dive||0,0.5);  // dive sooner
         }
       }
     }
@@ -918,11 +918,14 @@ function stepPlayer(p,dt){
   }
 
   // speed
-  let spd = p.gk?7.5:(isCtrl?(sprint?13:9.5):(p.team===1?9.2:8.8));
+  let spd = p.gk?7.8:(isCtrl?(sprint?13:9.5):(p.team===1?9.7:8.8));
   if(p.slide>0) spd=15;
-  if((p.dive||0)>0) spd=Math.max(spd,17);   // keeper dive lunge
+  if((p.dive||0)>0) spd=Math.max(spd,19);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
-  if(owner===p && p.team===1 && pressTimer>0) spd*=0.8;  // carrier loses a step under press
+  const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
+  if(owner===p && p.team===1) spd=Math.max(spd,10.8);  // red runs with the ball
+  if(redDefend) spd=Math.max(spd,10.8);                // red hustles to win it back
+  if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   if(desired.lengthSq()>0.001){
     desired.normalize();
     p.heading=Math.atan2(desired.x,desired.z);
@@ -970,16 +973,17 @@ function playerBallInteraction(dt){
   players.forEach(p=>{
     if(!p.gk||(p.fall||0)>0) return;
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
-    if(Math.hypot(dx,dz)<1.9 && ball.position.y<2.3) owner=p;
+    if(Math.hypot(dx,dz)<2.3 && ball.position.y<2.7) owner=p;   // wider, higher reach
   });
   teamHasBall = !!(owner && owner.team===0);
 
-  // dribble: keep ball ahead of owner if ball slow & grounded
-  if(owner && ball.position.y<0.7 && ballVel.length()<14){
+  // dribble: carry the ball clearly in FRONT of the owner (further ahead the faster they run)
+  if(owner && ball.position.y<0.8 && ballVel.length()<16){
     const fwd=new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
-    const want=owner.pos.clone().addScaledVector(fwd,1.1); want.y=BALL_R;
-    ball.position.lerp(want,Math.min(1,dt*7));
-    ballVel.multiplyScalar(0.6);
+    const off=1.35 + Math.min((owner.speed||0)*0.1, 1.1);       // 1.35 .. ~2.45 ahead
+    const want=owner.pos.clone().addScaledVector(fwd,off); want.y=BALL_R;
+    ball.position.lerp(want,Math.min(1,dt*13));                 // keep up so it never trails
+    ballVel.multiplyScalar(0.55);
     // slide tackle knocks ball away
     if(owner.slide>0){ ballVel.copy(fwd).multiplyScalar(10); ballVel.y=2; }
   }
