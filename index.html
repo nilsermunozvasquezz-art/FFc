@@ -461,8 +461,11 @@ function stepLinesmen(dt){
     // each assistant covers one half: follow the ball in your half, hold near the halfway line otherwise
     const tz = l.side>0 ? THREE.MathUtils.clamp(ball.position.z, -2, HALF_L-3)
                         : THREE.MathUtils.clamp(ball.position.z, -(HALF_L-3), 2);
+    // tracking the ball in your own half is quick; recovering to position when play is on
+    // the other half is a slower jog back (each assistant owns one half of the pitch)
+    const inMyHalf = l.side>0 ? ball.position.z > -1 : ball.position.z < 1;
     const spd=Math.abs(tz-l.z);
-    l.z+=(tz-l.z)*Math.min(1,dt*2.5);
+    l.z+=(tz-l.z)*Math.min(1,dt*(inMyHalf?2.5:0.9));
     l.mesh.position.set(l.side*(HALF_W+1.6),0,l.z);
     l.mesh.rotation.y=l.side>0?-Math.PI/2:Math.PI/2;                 // face the pitch
     const u=l.u; u.phase+=dt*(3+spd*4); const sw=Math.sin(u.phase)*0.3;
@@ -1046,11 +1049,22 @@ function stepPlayer(p,dt){
     let bx=base[0]+ball.position.x*.35;
     let bz;
     if(weHave){
-      const deep=p.roleIdx>=3;                                // winger + striker push deep
-      const fwd=p.team===0?(deep?30:14):(deep?-30:-14);
-      bz=fwd + ball.position.z*0.15;
+      // attacking: don't send everyone up — the striker + winger run in behind,
+      // the midfielder supports, and one defender stays home to cover the counter
+      if(p.roleIdx===1){                                     // defender: holds near own half
+        bz=(p.team===0?-10:10) + ball.position.z*0.08;
+      }else if(p.roleIdx===2){                               // midfielder: supports from the centre
+        bz=(p.team===0?8:-8) + ball.position.z*0.15;
+      }else{                                                 // winger + striker: push deep
+        bz=(p.team===0?30:-30) + ball.position.z*0.12;
+      }
     }else{
-      bz=base[1]*0.7 + ball.position.z*0.3;                  // recover toward own half
+      // defending: keep the striker up as an outlet, everyone else drops back to defend
+      if(p.roleIdx===STRIKER){
+        bz=(p.team===0?10:-10) + ball.position.z*0.1;
+      }else{
+        bz=base[1]*0.7 + ball.position.z*0.3;                // recover toward own half
+      }
     }
     bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
     if(throwTimer>0){
@@ -1420,7 +1434,11 @@ function loop(now){
           const o=owner;
           if(o && o===setPieceTaker){
             if(setPieceGK){ gkPass(o); }
-            else if(!aiTryPass(o)){ ballVel.set((o.team===0?6:-6),0.6,0); o.kickCd=0.4; owner=null; }
+            else {                                   // free kick / offside / throw-in: play a real pass to a mate (lofted over a blocker, else on the ground)
+              const tgt=passTarget(o);
+              if(tgt) passBall(o,tgt);
+              else if(!aiTryPass(o)){ ballVel.set((o.team===0?6:-6),0.6,0); o.kickCd=0.4; owner=null; }
+            }
           }
           setPieceTaker=null;                                       // window over
         }
