@@ -539,24 +539,45 @@ stick.addEventListener('mousedown',e=>{stickStart(e);
 // keyboard (desktop helper)
 const keys={};
 addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;
-  if(e.key===' ')doAction('A'); if(e.key.toLowerCase()==='x')doAction('B');
-  if(e.key.toLowerCase()==='c')doAction('C'); if(e.key==='Shift')sprint=true;});
+  if(e.key===' ')doAction('A',0.9); if(e.key.toLowerCase()==='x')doAction('B',0.9);
+  if(e.key.toLowerCase()==='c')doAction('C',0.9); if(e.key==='Shift')sprint=true;});
 addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false; if(e.key==='Shift')sprint=false;});
 function keyDir(){
   let x=0,y=0; if(keys['a']||keys['arrowleft'])x-=1; if(keys['d']||keys['arrowright'])x+=1;
   if(keys['w']||keys['arrowup'])y-=1; if(keys['s']||keys['arrowdown'])y+=1;
   if(x||y){const l=Math.hypot(x,y);moveDir.set(x/l,y/l);} }
 
-// action buttons
-function bindBtn(id,fn){
-  const el=document.getElementById(id);
-  const press=e=>{fn();e.preventDefault();};
-  el.addEventListener('touchstart',press,{passive:false});
-  el.addEventListener('mousedown',press);
+// action buttons: A/B/C charge power while held (release to fire); defense actions are instant
+const CHARGE_MAX=0.9;
+let charge={which:null,t0:0};
+function isKickAction(which){
+  if(throwTimer>0 && throwTeam===0 && which==='B') return true;   // taking a throw-in
+  return teamHasBall && (which==='A'||which==='B'||which==='C');
 }
-bindBtn('bA',()=>doAction('A'));
-bindBtn('bB',()=>doAction('B'));
-bindBtn('bC',()=>doAction('C'));
+function btnDown(which){
+  if(!running||paused) return;
+  if(isKickAction(which)){ charge.which=which; charge.t0=performance.now(); }
+  else doAction(which,1);                                         // instant (defense)
+}
+function btnUp(which){
+  if(charge.which!==which) return;
+  const held=(performance.now()-charge.t0)/1000;
+  charge.which=null;
+  doAction(which, THREE.MathUtils.clamp(held/CHARGE_MAX,0.25,1));
+}
+function bindBtn(id,which){
+  const el=document.getElementById(id);
+  const down=e=>{btnDown(which);e.preventDefault();};
+  const up=e=>{btnUp(which);};
+  el.addEventListener('touchstart',down,{passive:false});
+  el.addEventListener('touchend',up);
+  el.addEventListener('touchcancel',up);
+  el.addEventListener('mousedown',down);
+}
+bindBtn('bA','A');
+bindBtn('bB','B');
+bindBtn('bC','C');
+addEventListener('mouseup',()=>{ if(charge.which) btnUp(charge.which); });
 // run = hold
 const runBtn=document.getElementById('bRun');
 const runOn=e=>{sprint=true;e.preventDefault();}, runOff=()=>{sprint=false;};
@@ -621,11 +642,12 @@ function passTarget(pl){
   });
   return best;
 }
-function doAction(which){
+function doAction(which, power){
   if(!running||paused) return;
+  power = (power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   const p=ctrlPlayer();
   if(teamHasBall){
-    // ATTACK: A disparo, B raso, C elevado. If not near ball, switch to the one who is.
+    // ATTACK: A disparo, B pase, C elevado. If not near ball, switch to the one who is.
     if(p.pos.distanceTo(ball.position) > POSSESS+1.6){
       const n=nearestToBall(0,false);
       if(n && n.pos.distanceTo(ball.position) < POSSESS+1.6){ ctrl=players.indexOf(n); }
@@ -633,21 +655,22 @@ function doAction(which){
     }
     const pl=ctrlPlayer();
     if(pl.kickCd>0) return;
-    if(which==='B'){            // PASE to a teammate (auto ground/loft), then follow receiver
+    if(which==='B'){            // PASE to a teammate (power scales strength), then follow receiver
       const tgt=passTarget(pl);
-      if(tgt){ passBall(pl,tgt); ctrl=players.indexOf(tgt); return; }
+      if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
       // no teammate -> fall back to a ground kick forward
-      ballVel.copy(aimDir(pl)).multiplyScalar(22); ballVel.y=0.5; pl.kickCd=0.3; owner=null; return;
+      ballVel.copy(aimDir(pl)).multiplyScalar(16+16*power); ballVel.y=0.5; pl.kickCd=0.3; owner=null;
+      showPower(pl,power); return;
     }
     const dir=aimDir(pl); pl.kickCd=0.3; owner=null;
-    if(which==='A'){            // DISPARO fuerte -> toward goal
+    if(which==='A'){            // DISPARO -> toward goal, power sets how hard
       const gz=pl.team===0?HALF_L:-HALF_L;
       const target=new THREE.Vector3((Math.random()-.5)*GOAL_W*.7,0,gz).sub(ball.position).setY(0).normalize();
-      ballVel.copy(target).multiplyScalar(34); ballVel.y=4.5;
-      showPower(pl, 0.95);
-    }else{                      // CHUTE elevado (lob/cross)
-      ballVel.copy(dir).multiplyScalar(18); ballVel.y=10;
-      showPower(pl, 0.6);
+      ballVel.copy(target).multiplyScalar(18+24*power); ballVel.y=2.5+2.5*power;
+      showPower(pl, power);
+    }else{                      // CHUTE elevado (lob/cross), power sets distance+height
+      ballVel.copy(dir).multiplyScalar(11+13*power); ballVel.y=6+6*power;
+      showPower(pl, power);
     }
   }else{
     // DEFENSE: A barrer, B presión, C cambiar
@@ -707,8 +730,10 @@ function gkPass(p){
   if(p.team===0) ctrl=players.indexOf(best);         // hand control to the receiver
 }
 
-/* Pass the ball to a target teammate: lofted if a rival blocks the lane, else on the ground */
-function passBall(p,target){
+/* Pass the ball to a target teammate: lofted if a rival blocks the lane, else on the ground.
+   power (0.25..1, default 1) scales how hard it is struck. */
+function passBall(p,target,power){
+  power=(power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   // lead a moving receiver so the ball arrives at their feet
   const rough=ball.position.distanceTo(target.pos);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(rough/26,0,0.5)):new THREE.Vector3();
@@ -725,17 +750,18 @@ function passBall(p,target){
       if(perp<2.2) blocked=true;
     }
   });
+  const ps=0.7+0.5*power;                  // power multiplier on strike strength
   if(blocked){                             // lob so it drops on the target (g=26)
     const T=THREE.MathUtils.clamp(dist/17,0.85,1.5);
-    ballVel.copy(v).multiplyScalar(dist/T*1.16); ballVel.y=26*T/2;
+    ballVel.copy(v).multiplyScalar(dist/T*1.16*ps); ballVel.y=26*T/2*(0.85+0.3*power);
   }else{                                   // ground pass: speed set to actually reach the target
     // exp. friction k≈2.12/s on the ground; v0≈dist*k*1.2 lands it on the receiver
-    const sp=THREE.MathUtils.clamp(dist*2.7, 15, 54);
+    const sp=THREE.MathUtils.clamp(dist*2.7, 15, 54)*ps;
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.3;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
   if(throwTimer>0) throwTimer=0;                            // a throw-in was taken
-  showPower(p, THREE.MathUtils.clamp(dist/30, 0.25, 1));   // pass power bar
+  showPower(p, power);                                     // pass/throw power bar
 }
 
 /* AI open-play pass. Blue carriers feed the human; others find an advanced open mate. */
@@ -1240,6 +1266,10 @@ function loop(now){
       stepBall(dt);
       ballDeflect();
       stepReferee(dt);
+      if(charge.which){               // show the charging power over the controlled player
+        const held=(performance.now()-charge.t0)/1000;
+        showPower(ctrlPlayer(), THREE.MathUtils.clamp(held/CHARGE_MAX,0.08,1));
+      }
       updatePowerBars(dt);
       updateLandMarker();
     }
