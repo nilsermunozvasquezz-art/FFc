@@ -165,9 +165,9 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 const THREE = window.THREE;
 
 /* ============ constants ============ */
-const HALF_W = 23, HALF_L = 43;          // field x / z half-extents
+const HALF_W = 25, HALF_L = 48;          // field x / z half-extents
 const GOAL_W = 13, GOAL_H = 4.2, GOAL_D = 2.2;
-const BALL_R = 0.42, P_R = 0.9;
+const BALL_R = 0.34, P_R = 0.9;
 const POSSESS = 2.0;                       // distance to control ball
 const MATCH_SECS = 300;
 const TEAMS = 2, PER_TEAM = 5;             // 1 GK + 4 outfield
@@ -480,6 +480,7 @@ let ctrl=1;                       // index into blue team (players[ctrl]) contro
 let owner=null;                   // player object holding ball, or null
 let teamHasBall=false;            // true if blue owns
 let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
+let lastTouch=0, throwTeam=0, throwTimer=0;   // throw-in state
 
 const moveDir=new THREE.Vector2();   // joystick
 let sprint=false;
@@ -490,14 +491,14 @@ function kickoff(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=0;
+  ctrl=1; owner=null; kickoffHold=0; throwTimer=0;
 }
 // post-goal restart: line both teams up, then kick off after a short pause
 function kickoffRestart(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=1.8;    // hold in formation, then play
+  ctrl=1; owner=null; kickoffHold=1.8; throwTimer=0;    // hold in formation, then play
 }
 // hand the kickoff to the kicking team's striker; you (or the rival AI) play it out
 function kickoffBegin(){
@@ -733,6 +734,7 @@ function passBall(p,target){
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.3;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
+  if(throwTimer>0) throwTimer=0;                            // a throw-in was taken
   showPower(p, THREE.MathUtils.clamp(dist/30, 0.25, 1));   // pass power bar
 }
 
@@ -939,7 +941,15 @@ function stepPlayer(p,dt){
       bz=base[1]*0.7 + ball.position.z*0.3;                  // recover toward own half
     }
     bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
-    if(owner===p){
+    if(throwTimer>0){
+      // throw-in: the taker waits, teammates get open, opponents keep their distance
+      if(owner===p) desired.set(0,0,0);
+      else if(p.team!==throwTeam){
+        const away=p.pos.clone().sub(ball.position).setY(0);
+        if(away.length()<5.5){ away.setLength(5.5); desired.copy(ball.position).add(away).sub(p.pos).setY(0); }
+        else desired.set(bx-p.pos.x,0,bz-p.pos.z);
+      }else desired.set(bx-p.pos.x,0,bz-p.pos.z);
+    }else if(owner===p){
       // this AI player has the ball: shoot near box, else pass (high/low), else dribble
       const gz=p.team===0?HALF_L:-HALF_L;
       let acted=false;
@@ -1023,6 +1033,7 @@ function playerBallInteraction(dt){
     if(Math.hypot(dx,dz)<2.6 && ball.position.y<3.0) owner=p;   // wider, higher reach
   });
   teamHasBall = !!(owner && owner.team===0);
+  if(owner) lastTouch=owner.team;              // remember who touched it last (for throw-ins)
 
   // dribble: carry the ball clearly in FRONT of the owner (further ahead the faster they run)
   if(owner && ball.position.y<0.8 && ballVel.length()<16){
@@ -1033,6 +1044,23 @@ function playerBallInteraction(dt){
     ballVel.multiplyScalar(0.55);
     // slide tackle knocks ball away
     if(owner.slide>0){ ballVel.copy(fwd).multiplyScalar(10); ballVel.y=2; }
+  }
+}
+
+// throw-in: ball went out over a sideline -> award to the team that didn't touch it last
+function setupThrow(sideSign, zOut){
+  const award = lastTouch===0?1:0;
+  throwTeam=award; throwTimer=1.6;
+  const z=THREE.MathUtils.clamp(zOut,-HALF_L+5,HALF_L-5);
+  ball.position.set(sideSign*(HALF_W-0.3),BALL_R,z); ballVel.set(0,0,0);
+  let thr=null,bd=1e9;
+  players.forEach(p=>{if(p.team!==award||p.gk||p.sentOff)return;
+    const d=p.pos.distanceTo(ball.position); if(d<bd){bd=d;thr=p;}});
+  if(thr){
+    thr.pos.set(sideSign*(HALF_W+0.6),0,z); thr.vel.set(0,0,0);
+    thr.heading=Math.atan2(-sideSign,0);     // face into the pitch
+    owner=thr; thr.holdT=0; thr.kickCd=0;
+    if(award===0) ctrl=players.indexOf(thr);
   }
 }
 
@@ -1047,10 +1075,10 @@ function stepBall(dt){
   }else{
     const fr=Math.pow(0.85,dt); ballVel.x*=fr; ballVel.z*=fr;   // air drag
   }
-  // walls (sidelines bounce softly, let it go out a bit then reset handled by goals/out)
-  if(Math.abs(ball.position.x)>HALF_W+0.5 && Math.abs(ball.position.z)<HALF_L){
-    ball.position.x=THREE.MathUtils.clamp(ball.position.x,-HALF_W-.5,HALF_W+.5);
-    ballVel.x*=-0.4;
+  // sideline out of play -> throw-in for the other team
+  if(Math.abs(ball.position.x)>HALF_W && Math.abs(ball.position.z)<HALF_L
+     && throwTimer<=0 && kickoffHold<=0){
+    setupThrow(ball.position.x>0?1:-1, ball.position.z);
   }
   // goals
   if(Math.abs(ball.position.x)<GOAL_W/2 && ball.position.y<GOAL_H){
@@ -1163,18 +1191,20 @@ function drawMini(){
 const poss=document.getElementById('poss');
 const lA=document.getElementById('lA'),lB=document.getElementById('lB'),lC=document.getElementById('lC');
 const bA=document.getElementById('bA'),bB=document.getElementById('bB'),bC=document.getElementById('bC');
-let lastMode=null;
+let lastMode=null, lastThrow=false;
 function updateButtons(){
+  const thr = throwTimer>0;
   const mode = teamHasBall?'atk':'def';
-  if(mode===lastMode) return;
-  lastMode=mode;
+  if(mode===lastMode && thr===lastThrow) return;
+  lastMode=mode; lastThrow=thr;
   if(mode==='atk'){
-    poss.textContent='⚽ ATACANDO'; poss.style.color='#7fd3ff';
     lA.textContent='DISPARO'; lB.textContent='PASE'; lC.textContent='ELEVADO';
+    poss.textContent='⚽ ATACANDO'; poss.style.color='#7fd3ff';
   }else{
-    poss.textContent='🛡 DEFENDIENDO'; poss.style.color='#ffce6a';
     lA.textContent='BARRER'; lB.textContent='PRESIONAR'; lC.textContent='CAMBIAR';
+    poss.textContent='🛡 DEFENDIENDO'; poss.style.color='#ffce6a';
   }
+  if(thr){ poss.textContent='🫳 SAQUE DE BANDA (PASE)'; poss.style.color='#9fe9ff'; }
 }
 
 /* ============ loop ============ */
@@ -1195,6 +1225,13 @@ function loop(now){
       if(kickoffHold<=0) kickoffBegin();
     }else{
       if(pressTimer>0)pressTimer-=dt;
+      if(throwTimer>0){
+        throwTimer-=dt;
+        if(throwTimer<=0 && owner && owner.team===throwTeam && throwTeam===1){
+          const o=owner;
+          if(!aiTryPass(o)){ ballVel.set(-Math.sign(ball.position.x)*8,0.6,0); o.kickCd=0.4; owner=null; }
+        }
+      }
       players.forEach(p=>stepPlayer(p,dt));
       resolveTackles();
       pressSteal();
