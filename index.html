@@ -555,10 +555,13 @@ function gkPass(p){
     if(sc>bb){bb=sc;best=q;}
   });
   if(!best) return;
+  // lofted throw: arc the ball OVER any rival in between, landing near the teammate
   const v=best.pos.clone().sub(ball.position).setY(0); const dist=v.length(); v.normalize();
-  ballVel.copy(v).multiplyScalar(THREE.MathUtils.clamp(dist*1.8,15,28)); ballVel.y=1.4;
+  const T=THREE.MathUtils.clamp(dist/16,0.95,1.5);   // flight time grows with distance
+  ballVel.copy(v).multiplyScalar(dist/T*1.18);       // horizontal speed (+drag compensation)
+  ballVel.y=26*T/2;                                  // vertical speed (g=26) for the arc
   p.kickCd=0.8; owner=null;
-  if(p.team===0) ctrl=players.indexOf(best);     // hand control to the receiver
+  if(p.team===0) ctrl=players.indexOf(best);         // hand control to the receiver
 }
 
 /* Slide tackles: a sliding player that reaches an opponent knocks them down,
