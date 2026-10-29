@@ -604,6 +604,13 @@ function kickoffBegin(){
   awaitKickoffPass=true; kickoffTaker=st;          // the opponent can't cross midfield until this pass is played
   if(kickoffTeam===0) ctrl=players.indexOf(st);    // you take the kickoff and must pass it
 }
+// kickoff is started with a short ball to the NEAREST teammate (back or square), not a long ball forward
+function kickoffPassTarget(p){
+  let best=null,bd=1e9;
+  players.forEach(q=>{ if(q.team!==p.team||q===p||q.sentOff||q.gk) return;
+    const d=q.pos.distanceTo(p.pos); if(d<bd){bd=d;best=q;} });
+  return best;
+}
 
 /* ============ input ============ */
 // joystick
@@ -748,6 +755,12 @@ function doAction(which, power){
   if(!running||paused) return;
   power = (power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   const p=ctrlPlayer();
+  // kickoff: any action plays a short ball to a nearby teammate (back or square) to start the game
+  if(awaitKickoffPass && teamHasBall && owner===kickoffTaker){
+    const tgt=kickoffPassTarget(owner);
+    if(tgt){ passBall(owner,tgt,0.5); ctrl=players.indexOf(tgt); }
+    return;
+  }
   if(teamHasBall){
     // ATTACK: A disparo, B pase, C elevado. If not near ball, switch to the one who is.
     if(p.pos.distanceTo(ball.position) > POSSESS+1.6){
@@ -1048,10 +1061,14 @@ function stepPlayer(p,dt){
     // both teams wait in their formation spots before the kickoff
     desired.copy(p.base).sub(p.pos).setY(0);
     if(desired.lengthSq()<0.04) desired.set(0,0,0);
+  }else if(awaitKickoffPass && p===kickoffTaker){
+    // the kickoff taker is frozen on the centre spot until the ball is played (you can only pass)
+    if(p.team===1 && (p.holdT||0)>0.45){ const tgt=kickoffPassTarget(p); if(tgt) passBall(p,tgt,0.5); }  // CPU plays its kickoff
+    desired.set(0,0,0); p.vel.set(0,0,0);
   }else if(deadTimer>0){
-    // dead ball after a whistle: ease back toward formation, nobody chases
+    // dead ball after a whistle: everyone jogs to their proper formation position, nobody chases
     const f=FORM[p.team][p.roleIdx];
-    desired.set(f[0]-p.pos.x, 0, f[1]*0.8 - p.pos.z);
+    desired.set(f[0]-p.pos.x, 0, f[1] - p.pos.z);
     if(desired.lengthSq()<0.25) desired.set(0,0,0);
   }else if(isCtrl){
     keyDir();
@@ -1126,13 +1143,16 @@ function stepPlayer(p,dt){
     // forwards hold the offside line when we attack, except on a rare timed run in behind
     if(weHave && p.roleIdx>=3 && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
     if(throwTimer>0){
-      // throw-in: the taker waits, teammates get open, opponents keep their distance
+      // set-piece (foul / offside / throw-in): everyone takes up their proper formation position,
+      // the taker waits on the ball, and opponents keep their distance
+      const f=FORM[p.team][p.roleIdx];
+      const fz=f[1]*0.55 + ball.position.z*0.3;         // own lane, shifted toward the ball side
       if(owner===p) desired.set(0,0,0);
       else if(p.team!==throwTeam){
         const away=p.pos.clone().sub(ball.position).setY(0);
         if(away.length()<7.5){ away.setLength(7.5); desired.copy(ball.position).add(away).sub(p.pos).setY(0); }
-        else desired.set(bx-p.pos.x,0,bz-p.pos.z);
-      }else desired.set(bx-p.pos.x,0,bz-p.pos.z);
+        else desired.set(f[0]-p.pos.x,0,fz-p.pos.z);
+      }else desired.set(f[0]-p.pos.x,0,fz-p.pos.z);
     }else if(owner===p){
       // this AI player has the ball: shoot near box, pass quickly (more when pressed), else carry
       const gz=p.team===0?HALF_L:-HALF_L;
