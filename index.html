@@ -1554,12 +1554,13 @@ function loop(now){
         if(throwTimer<=0){
           const o=owner;
           if(o && o===setPieceTaker){
-            if(setPieceGK){ gkPass(o); }
-            else {                                   // free kick / offside / throw-in: play a real pass to a mate (lofted over a blocker, else on the ground)
+            if(setPieceGK){ gkPass(o); }             // keeper plays out a goal kick
+            else if(o.team===1){                     // only the CPU auto-takes its throw-ins / free kicks
               const tgt=passTarget(o);
               if(tgt) passBall(o,tgt);
-              else if(!aiTryPass(o)){ ballVel.set((o.team===0?6:-6),0.6,0); o.kickCd=0.4; owner=null; }
+              else if(!aiTryPass(o)){ ballVel.set(-6,0.6,0); o.kickCd=0.4; owner=null; }
             }
+            // YOUR outfield set-pieces never auto-pass — the ball stays with you; take it with PASE when ready
           }
           setPieceTaker=null;                                       // window over
         }
