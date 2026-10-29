@@ -569,6 +569,7 @@ let teamHasBall=false;            // true if blue owns
 let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
 let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='', setPieceTaker=null, setPieceGK=false;   // set-piece state
 let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then the restart is set up
+let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pass; foes held in their half until then
 function scheduleRestart(delay, label, fn){
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
   throwTimer=0;                              // a new whistle supersedes any pending set-piece
@@ -584,7 +585,8 @@ function kickoff(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=0; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;
+  ctrl=1; owner=null; kickoffHold=1.2; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;
+  awaitKickoffPass=false; kickoffTaker=null;      // settle in formation, then a proper kickoff pass
 }
 // post-goal restart: line both teams up, then kick off after a short pause
 function kickoffRestart(team){
@@ -592,13 +594,15 @@ function kickoffRestart(team){
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
   ctrl=1; owner=null; kickoffHold=1.8; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // hold in formation, then play
+  awaitKickoffPass=false; kickoffTaker=null;
 }
-// hand the kickoff to the kicking team's striker; you (or the rival AI) play it out
+// hand the kickoff to the kicking team's striker; play only resumes once they pass to a mate
 function kickoffBegin(){
   const st=players.find(p=>p.team===kickoffTeam&&p.idx===STRIKER&&!p.sentOff) || nearestToBall(kickoffTeam,true);
   if(!st) return;
   owner=st; st.holdT=0;
-  if(kickoffTeam===0) ctrl=players.indexOf(st);   // you take the kickoff and can pass it
+  awaitKickoffPass=true; kickoffTaker=st;          // the opponent can't cross midfield until this pass is played
+  if(kickoffTeam===0) ctrl=players.indexOf(st);    // you take the kickoff and must pass it
 }
 
 /* ============ input ============ */
@@ -789,11 +793,14 @@ function cpuTryKick(p){
   if(ball.position.z > -HALF_L+30) return false;       // only start looking for goal past the middle
   const onAngle=Math.abs(ball.position.x)<GOAL_W+5;
   // take the shot on when there's a sight of goal (so the rival actually creates chances)
-  if(onAngle && (dg<20 || (dg<30 && Math.random()<0.4))){
-    const tx=(Math.random()-.5)*GOAL_W*0.82;
+  if(onAngle && (dg<22 || (dg<30 && Math.random()<0.45))){
+    // aim for the corner AWAY from the keeper so it's a real test, not straight at them
+    const gk=players.find(q=>q.team===0&&q.gk);
+    const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
+    const tx = side*(GOAL_W*0.5-1.1) + (Math.random()-0.5)*1.4;
     const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0).normalize();
-    const pw=0.8+Math.random()*0.2;
-    ballVel.copy(dir).multiplyScalar(28+12*pw); ballVel.y=2.6+2.2*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
+    const pw=0.85+Math.random()*0.15;
+    ballVel.copy(dir).multiplyScalar(30+12*pw); ballVel.y=2.5+2.0*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
   }
   // only lay it off if a teammate is clearly better placed; otherwise drive at goal yourself
   let best=null,bz=1e9;
@@ -933,6 +940,7 @@ function resolveTackles(){
 
 /* PRESIONAR steal: while pressing, a blue player reaching the rival carrier wins the ball */
 function pressSteal(){
+  if(awaitKickoffPass) return;                 // no stealing during a kickoff
   if(pressTimer<=0 || !(owner && owner.team===1)) return;
   const carrier=owner;
   for(const p of players){
@@ -951,17 +959,18 @@ function pressSteal(){
 
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
 function cpuSteal(){
+  if(awaitKickoffPass) return;                 // no stealing during a kickoff
   if(!(owner && owner.team===0)) return;
   const carrier=owner;
   for(const p of players){
     if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
-    if(p.pos.distanceTo(carrier.pos)<1.35){
+    if(p.pos.distanceTo(carrier.pos)<1.55){
       const away=p.pos.clone().sub(carrier.pos).setY(0);
       if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
       away.normalize();
       ball.position.set(p.pos.x+away.x*0.7,BALL_R,p.pos.z+away.z*0.7);
       ballVel.copy(away).multiplyScalar(4);
-      owner=p; p.stealCd=0.9;
+      owner=p; p.stealCd=0.8;
       break;
     }
   }
@@ -1143,7 +1152,7 @@ function stepPlayer(p,dt){
       desired.copy(ball.position).sub(p.pos).setY(0);
       // cpu slide-tackles the human carrier when close
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0
-         && p.pos.distanceTo(owner.pos)<2.4 && Math.random()<0.05){
+         && p.pos.distanceTo(owner.pos)<2.7 && Math.random()<0.07){
         p.slide=0.6; p.slideMax=0.6; p.slideCd=1.8;
       }
     }else if(weHave && !p.gk){
@@ -1171,8 +1180,8 @@ function stepPlayer(p,dt){
   if((p.dive||0)>0) spd=Math.max(spd,23);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
-  if(owner===p && p.team===1) spd=Math.max(spd,10.8);  // red runs with the ball
-  if(redDefend) spd=Math.max(spd,10.8);                // red hustles to win it back
+  if(owner===p && p.team===1) spd=Math.max(spd,11.3);  // red runs with the ball
+  if(redDefend) spd=Math.max(spd,11.4);                // red hustles to win it back
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   if(desired.lengthSq()>0.001){
     desired.normalize();
@@ -1187,6 +1196,14 @@ function stepPlayer(p,dt){
   p.pos.addScaledVector(p.vel,dt);
   p.pos.x=THREE.MathUtils.clamp(p.pos.x,-HALF_W-1,HALF_W+1);
   p.pos.z=THREE.MathUtils.clamp(p.pos.z,-HALF_L-3,HALF_L+3);
+  // at kickoff the team NOT taking it waits in their own half AND outside the centre circle,
+  // and can't cross midfield until the ball is passed
+  if(awaitKickoffPass && p.team!==kickoffTeam && !p.gk){
+    const d=Math.hypot(p.pos.x,p.pos.z);
+    if(d<9.5 && d>0.01){ const s=9.5/d; p.pos.x*=s; p.pos.z*=s; }   // stay out of the centre circle
+    if(p.team===0) p.pos.z=Math.min(p.pos.z,-1.2);
+    else           p.pos.z=Math.max(p.pos.z, 1.2);
+  }
   p.speed=p.vel.length();
 
   if(p.slide>0)p.slide-=dt;
@@ -1571,6 +1588,12 @@ function loop(now){
       pressSteal();
       cpuSteal();
       playerBallInteraction(dt);
+      // kickoff is "played" once the taker passes the ball (or it crosses midfield) -> release the foes
+      if(awaitKickoffPass){
+        const passed = owner!==kickoffTaker;                                   // the taker played the ball
+        const crossed = kickoffTeam===0 ? ball.position.z>8 : ball.position.z<-8;  // or carried it well upfield
+        if(passed || crossed){ awaitKickoffPass=false; kickoffTaker=null; }
+      }
       stepBall(dt);
       ballDeflect();
       stepReferee(dt); stepLinesmen(dt);
