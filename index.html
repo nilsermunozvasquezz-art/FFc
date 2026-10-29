@@ -881,7 +881,7 @@ function doAction(which, power){
   // kickoff: any action plays a short ball to a nearby teammate (back or square) to start the game
   if(awaitKickoffPass && teamHasBall && owner===kickoffTaker){
     const tgt=kickoffPassTarget(owner);
-    if(tgt){ passBall(owner,tgt,0.5); ctrl=players.indexOf(tgt); }
+    if(tgt){ passBall(owner,tgt,0.6); ctrl=players.indexOf(tgt); awaitKickoffPass=false; kickoffTaker=null; }
     return;
   }
   if(teamHasBall){
@@ -1199,8 +1199,15 @@ function stepPlayer(p,dt){
     if(desired.lengthSq()<0.04) desired.set(0,0,0);
   }else if(awaitKickoffPass && p===kickoffTaker){
     // the kickoff taker is frozen on the centre spot until the ball is played (you can only pass)
-    if(p.team===1 && (p.holdT||0)>0.45){ const tgt=kickoffPassTarget(p); if(tgt) passBall(p,tgt,0.5); }  // CPU plays its kickoff
+    if(p.team===1 && (p.holdT||0)>0.4){                 // CPU plays its own kickoff after settling
+      const tgt=kickoffPassTarget(p);
+      if(tgt){ passBall(p,tgt,0.7); awaitKickoffPass=false; kickoffTaker=null; }   // release right away
+    }
     desired.set(0,0,0); p.vel.set(0,0,0);
+  }else if(awaitKickoffPass){
+    // everyone else waits in their kickoff formation (own half) until the ball is played — no attacking yet
+    desired.copy(p.base).sub(p.pos).setY(0);
+    if(desired.lengthSq()<0.09) desired.set(0,0,0);
   }else if(throwTimer>0 && p===setPieceTaker && owner===p){
     // the set-piece taker (throw-in / free kick / goal kick) can't roam until they play the ball;
     // after the pass, movement resumes as normal
@@ -1414,13 +1421,16 @@ function stepPlayer(p,dt){
   p.pos.addScaledVector(p.vel,dt);
   p.pos.x=THREE.MathUtils.clamp(p.pos.x,-HALF_W-1,HALF_W+1);
   p.pos.z=THREE.MathUtils.clamp(p.pos.z,-HALF_L-3,HALF_L+3);
-  // at kickoff the team NOT taking it waits in their own half AND outside the centre circle,
-  // and can't cross midfield until the ball is passed
-  if(awaitKickoffPass && p.team!==kickoffTeam && !p.gk){
-    const d=Math.hypot(p.pos.x,p.pos.z);
-    if(d<9.5 && d>0.01){ const s=9.5/d; p.pos.x*=s; p.pos.z*=s; }   // stay out of the centre circle
+  // at kickoff NOBODY but the taker may cross midfield until the ball is played; the defending
+  // team also stays outside the centre circle
+  if(awaitKickoffPass && p!==kickoffTaker && !p.gk){
     if(p.team===0) p.pos.z=Math.min(p.pos.z,-1.2);
     else           p.pos.z=Math.max(p.pos.z, 1.2);
+    if(p.team!==kickoffTeam){
+      const d=Math.hypot(p.pos.x,p.pos.z);
+      if(d<9.5 && d>0.01){ const s=9.5/d; p.pos.x*=s; p.pos.z*=s; }   // defenders out of the circle
+      if(p.team===0) p.pos.z=Math.min(p.pos.z,-1.2); else p.pos.z=Math.max(p.pos.z, 1.2);
+    }
   }
   // on any set-piece (foul / offside / throw-in), the defending team must keep clear of the ball
   // until it is taken — they can't close in
