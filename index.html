@@ -1,4 +1,4 @@
-<title>FFc Fútbol 4v4</title>
+<title>FFc Fútbol 6v6</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 :root{--bg:#06250f;--fg:#fff;--blue:#1e6fff;--red:#e2353b;--grn:#19c268;color-scheme:dark}
@@ -163,7 +163,7 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 </div>
 
 <div id="start"><div class="card">
-  <h1>FFc · FÚTBOL 4v4</h1>
+  <h1>FFc · FÚTBOL 6v6</h1>
   <p>Estilo DLS. Mueve con el joystick (izquierda). Los botones cambian según si tu equipo
      tiene el balón (atacar) o no (defender). Mete más goles en 5 minutos.</p>
   <button class="go" id="goBtn">JUGAR</button>
@@ -189,7 +189,7 @@ const GROUND_FR = 0.16;               // rolling resistance (per second factor)
 const AIR_FR = 0.88;                  // air drag (per second factor)
 const POSSESS = 2.0;                       // distance to control ball
 const MATCH_SECS = 300;
-const TEAMS = 2, PER_TEAM = 5;             // 1 GK + 4 outfield
+const TEAMS = 2, PER_TEAM = 6;             // 1 GK + 5 outfield
 const GAME_SPEED = 0.66;                    // <1 slows the whole match for a calmer pace
 
 /* ============ renderer / scene ============ */
@@ -471,22 +471,24 @@ spawnTeam(0); spawnTeam(1);
 function assignRoles(){
   [0,1].forEach(t=>{
     const avail=players.filter(p=>p.team===t&&!p.gk&&!p.sentOff).sort((a,b)=>a.idx-b.idx);
-    const slots = avail.length>=4?[1,2,3,4] : avail.length===3?[1,2,4] : avail.length===2?[1,4] : [1];
+    // fill the key roles first as players are lost: CB, striker, wings, then central mid
+    const slots = avail.length>=5?[1,2,3,4,5] : avail.length===4?[1,2,3,5]
+                : avail.length===3?[1,2,5] : avail.length===2?[1,5] : [1];
     avail.forEach((p,i)=>{ p.roleIdx = slots[i] || 1; });
     players.forEach(p=>{ if(p.team===t&&p.gk) p.roleIdx=0; });
   });
 }
 
-/* formations (blue attacks +Z; red attacks -Z) : gk, def, LM, RM, ST */
+/* formations (blue attacks +Z; red attacks -Z) : gk, CB, LM, RM, CM, ST */
 const FORM=[
-  [[0,-HALF_L+2],[0,-18],[-13,-4],[13,-4],[0,6]],     // blue
-  [[0, HALF_L-2],[0, 18],[ 13, 4],[-13, 4],[0,-6]]    // red mirrored
+  [[0,-HALF_L+2],[0,-20],[-14,-7],[14,-7],[0,3],[0,13]],     // blue
+  [[0, HALF_L-2],[0, 20],[ 14, 7],[-14, 7],[0,-3],[0,-13]]   // red mirrored
 ];
-const STRIKER=PER_TEAM-1;                              // last index = striker
+const STRIKER=PER_TEAM-1;                              // last index = striker (5)
 // kickoff layout: every player inside their OWN half (blue z<0, red z>0)
 const KICK=[
-  [[0,-HALF_L+2],[0,-22],[-13,-11],[13,-11],[0,-3]],  // blue
-  [[0, HALF_L-2],[0, 22],[ 13, 11],[-13, 11],[0, 3]]  // red
+  [[0,-HALF_L+2],[0,-24],[-14,-13],[14,-13],[0,-6],[0,-2]],  // blue
+  [[0, HALF_L-2],[0, 24],[ 14, 13],[-14, 13],[0, 6],[0, 2]]  // red
 ];
 function resetPositions(kickTeam){
   assignRoles();
@@ -823,6 +825,23 @@ function pickMark(p){
   players.forEach(q=>{ if(q.team===p.team||q.gk||q.sentOff||q===owner) return;
     const d=q.pos.distanceTo(p.pos); if(d<bd){bd=d;best=q;} });
   return best;
+}
+// position-based defensive roles, recomputed every frame so they ROTATE naturally (not fixed to a shirt):
+// whoever is nearest the ball presses, whoever is deepest covers the box, whoever is highest waits for the counter
+let defRoleCache=[null,null];
+function computeDefRoles(){
+  for(const team of [0,1]){
+    const outs=players.filter(q=>q.team===team&&!q.gk&&!q.sentOff);
+    if(!outs.length){ defRoleCache[team]={presser:null,cover:null,outlet:null}; continue; }
+    const gz=team===0?-HALF_L:HALF_L;
+    const goalDist=q=>Math.abs(q.pos.z-gz)+Math.abs(q.pos.x)*0.3;
+    let presser=outs[0]; for(const q of outs) if(q.pos.distanceTo(ball.position)<presser.pos.distanceTo(ball.position)) presser=q;
+    const rest=outs.filter(q=>q!==presser);
+    let cover=rest[0]||presser; for(const q of rest) if(goalDist(q)<goalDist(cover)) cover=q;
+    const rest2=rest.filter(q=>q!==cover);
+    let outlet=rest2[0]||null; for(const q of rest2) if(!outlet||goalDist(q)>goalDist(outlet)) outlet=q;
+    defRoleCache[team]={presser,cover,outlet};
+  }
 }
 function aimDir(p){
   // joystick direction (side-camera mapped) if pushed, else toward opponent goal
@@ -1258,29 +1277,30 @@ function stepPlayer(p,dt){
     // shift formation: push forwards into attack when we have the ball, drop back otherwise
     let bx=base[0]+ball.position.x*.35;
     let bz;
+    const deepFwd=(p.roleIdx===2||p.roleIdx===3||p.roleIdx===STRIKER);  // wingers + striker run high
     if(weHave){
-      // attacking: don't send everyone up — the striker + winger run in behind,
-      // the midfielder supports, and one defender stays home to cover the counter
-      if(p.roleIdx===1){                                     // defender: holds near own half
-        bz=(p.team===0?-10:10) + ball.position.z*0.08;
-      }else if(p.roleIdx===2){                               // midfielder: supports from the centre
+      // attacking: don't send everyone up — the striker + wingers run in behind, the central mid
+      // supports, and the centre-back stays home to cover the counter
+      if(p.roleIdx===1){                                     // centre-back: holds near own half
+        bz=(p.team===0?-12:12) + ball.position.z*0.08;
+      }else if(p.roleIdx===4){                               // central mid: supports from the centre
         bz=(p.team===0?8:-8) + ball.position.z*0.15;
       }else if(p.roleIdx===STRIKER){                          // striker leads the line into the box
         bz=(p.team===0?36:-36) + ball.position.z*0.12;
-      }else{                                                  // winger: push deep and wide
+      }else{                                                  // wingers (2,3): push deep and wide
         bz=(p.team===0?30:-30) + ball.position.z*0.12;
       }
     }else{
       // defending: keep the striker up as an outlet, everyone else drops back to defend
       if(p.roleIdx===STRIKER){
-        bz=(p.team===0?10:-10) + ball.position.z*0.1;
+        bz=(p.team===0?12:-12) + ball.position.z*0.1;
       }else{
         bz=base[1]*0.7 + ball.position.z*0.3;                // recover toward own half
       }
     }
     bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
     // forwards hold the offside line when we attack, except on a rare timed run in behind
-    if(weHave && p.roleIdx>=3 && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
+    if(weHave && deepFwd && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
     if(throwTimer>0){
       // set-piece: players shuffle depending on the restart and whether it's for or against us.
       // Taking side pushes UP on a throw-in / free kick (attack); the other side drops BACK to defend.
@@ -1320,23 +1340,25 @@ function stepPlayer(p,dt){
       if(acted) desired.set(0,0,0);
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
     }else if(!weHave){
-      // realistic defending — the jobs are always SHARED, never everyone on the ball:
-      //   nearest wins it · last man covers the box · striker waits for the counter · the rest mark
+      // realistic defending with ROTATING roles (by current position, not fixed shirt):
+      //   nearest wins it · deepest covers the box · highest waits for the counter · the rest mark.
+      // A given player cycles through these jobs as play moves, so it never looks robotic.
+      const roles=defRoleCache[p.team]||{};
       const rank=ballRank(p);
       const ownGoalZ=p.team===0?-HALF_L:HALF_L;
       const gdir=p.team===0?1:-1;                         // our attacking direction in z
       const carrier=(owner&&owner.team!==p.team)?owner:null;
       const veryClose=carrier && p.pos.distanceTo(carrier.pos)<4.2;
       const rightOnGoal=Math.abs(ball.position.z-ownGoalZ)<15;   // ball truly on top of our box
-      if(rank===0){
-        desired.copy(ball.position).sub(p.pos).setY(0);   // the closest man goes to win the ball
-      }else if(p.roleIdx===1){
-        // last defender ALWAYS guards the space in front of our goal (the counter cover)
+      if(p===roles.presser){
+        desired.copy(ball.position).sub(p.pos).setY(0);   // whoever is nearest closes the ball down
+      }else if(p===roles.cover){
+        // the deepest man guards the space in front of our goal (cover for the counter)
         const gx=THREE.MathUtils.clamp(ball.position.x*0.5,-GOAL_W-2,GOAL_W+2);
         desired.set(gx-p.pos.x,0,(ownGoalZ+gdir*13)-p.pos.z);
-      }else if(p.roleIdx===STRIKER && !rightOnGoal){
-        desired.set(bx-p.pos.x,0,bz-p.pos.z);             // striker stays high, ready for the counterattack
-      }else if(rank===1 && (veryClose||rightOnGoal)){
+      }else if(p===roles.outlet && !rightOnGoal){
+        desired.set(bx-p.pos.x,0,bz-p.pos.z);             // the highest man stays up, ready for the counterattack
+      }else if((veryClose||rightOnGoal) && rank<=1){
         desired.copy(ball.position).sub(p.pos).setY(0);   // a SECOND man doubles up only when it's really on
       }else{
         // otherwise, mark the nearest opponent, standing goal-side of them
@@ -1355,7 +1377,7 @@ function stepPlayer(p,dt){
       // drift toward open space away from the nearest opponent
       let on=null,od=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff){const d=o.pos.distanceTo(p.pos);if(d<od){od=d;on=o;}}});
       if(on && od<5){ const aw=p.pos.clone().sub(on.pos).setY(0); if(aw.lengthSq()>0.01){aw.setLength(3); bxx+=aw.x; bzz+=aw.z;} }
-      if(p.roleIdx>=3 && (p.runGamble||0)<=0) bzz=keepOnsideZ(p.team,bzz);  // stay onside while supporting
+      if(deepFwd && (p.runGamble||0)<=0) bzz=keepOnsideZ(p.team,bzz);  // stay onside while supporting
       desired.set(bxx-p.pos.x,0,bzz-p.pos.z);
     }else{
       desired.set(bx-p.pos.x,0,bz-p.pos.z);
@@ -1417,7 +1439,7 @@ function stepPlayer(p,dt){
   if((p.runGamble||0)>0) p.runGamble-=dt;
   else if(!p.gk){
     // forwards time runs in behind; the CPU's attackers gamble a little more often to make chances
-    const rate = (p.team===1 && p.roleIdx>=3) ? dt*0.09 : dt*0.045;
+    const rate = (p.team===1 && (p.roleIdx===2||p.roleIdx===3||p.roleIdx===STRIKER)) ? dt*0.09 : dt*0.045;
     if(Math.random()<rate) p.runGamble=1.0;
   }
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else p.holdT=0;  // AI possession timer
@@ -1786,6 +1808,7 @@ function loop(now){
           setPieceTaker=null;                                       // window over
         }
       }
+      computeDefRoles();                 // assign press/cover/outlet by current positions (rotates each frame)
       players.forEach(p=>stepPlayer(p,dt));
       separatePlayers();
       resolveTackles();
