@@ -817,6 +817,13 @@ function ballRank(p){
   players.forEach(q=>{ if(q.team===p.team&&!q.gk&&q!==p&&!q.sentOff && q.pos.distanceTo(ball.position)<d) r++; });
   return r;
 }
+// nearest opponent (not the ball carrier) for a defender to pick up / mark
+function pickMark(p){
+  let best=null,bd=1e9;
+  players.forEach(q=>{ if(q.team===p.team||q.gk||q.sentOff||q===owner) return;
+    const d=q.pos.distanceTo(p.pos); if(d<bd){bd=d;best=q;} });
+  return best;
+}
 function aimDir(p){
   // joystick direction (side-camera mapped) if pushed, else toward opponent goal
   if(moveDir.lengthSq()>0.05) return new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
@@ -1075,19 +1082,21 @@ function cpuSteal(){
   }
 }
 
-/* Physics: a fast loose ball ricochets off players' bodies/legs */
+/* Physics: the ball collides with players' bodies — keepers are a solid wall that blocks/parries */
 function ballDeflect(){
-  const rad=P_R+BALL_R-0.15;
   for(const p of players){
     if(p===owner || (p.fall||0)>0 || p.sentOff) continue;
+    const rad   = p.gk ? 1.7 : (P_R+BALL_R+0.05);     // keepers have a bigger blocking body
+    const maxY  = p.gk ? GOAL_H : 2.2;
+    const minSp = p.gk ? 1.5 : 6;                      // keepers stop even a slow ball
     const dx=ball.position.x-p.pos.x, dz=ball.position.z-p.pos.z;
     const d=Math.hypot(dx,dz);
-    if(d<rad && ball.position.y<2.2 && ballVel.length()>6){
+    if(d<rad && ball.position.y<maxY && ballVel.length()>minSp){
       const nx=dx/(d||1), nz=dz/(d||1);
-      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;
+      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // push the ball out of the body
       const vn=ballVel.x*nx+ballVel.z*nz;
-      if(vn<0){ ballVel.x-=1.5*vn*nx; ballVel.z-=1.5*vn*nz; }   // reflect with damping
-      ballVel.x*=0.8; ballVel.z*=0.8; ballVel.y+=1.5;           // small pop up
+      if(vn<0){ const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz; }   // reflect
+      const damp=p.gk?0.5:0.8; ballVel.x*=damp; ballVel.z*=damp; ballVel.y+=p.gk?0.8:1.5;
     }
   }
 }
@@ -1150,6 +1159,10 @@ function stepPlayer(p,dt){
   }else if(awaitKickoffPass && p===kickoffTaker){
     // the kickoff taker is frozen on the centre spot until the ball is played (you can only pass)
     if(p.team===1 && (p.holdT||0)>0.45){ const tgt=kickoffPassTarget(p); if(tgt) passBall(p,tgt,0.5); }  // CPU plays its kickoff
+    desired.set(0,0,0); p.vel.set(0,0,0);
+  }else if(throwTimer>0 && p===setPieceTaker && owner===p){
+    // the set-piece taker (throw-in / free kick / goal kick) can't roam until they play the ball;
+    // after the pass, movement resumes as normal
     desired.set(0,0,0); p.vel.set(0,0,0);
   }else if(deadTimer>0){
     // dead ball after a whistle: everyone jogs to their proper formation position, nobody chases
@@ -1284,11 +1297,31 @@ function stepPlayer(p,dt){
       if(!acted && p.team===1 && hold>need) acted=aiTryPass(p);
       if(acted) desired.set(0,0,0);
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
-    }else if(!weHave && ballRank(p)<=1){
-      // the two nearest defenders pursue the ball together
-      desired.copy(ball.position).sub(p.pos).setY(0);
-      // cpu slide-tackles the human carrier when close
-      if(p.team===1 && p.slideCd<=0 && owner && owner.team===0
+    }else if(!weHave){
+      // realistic defending — share the jobs instead of everyone chasing the same man
+      const rank=ballRank(p);
+      const ownGoalZ=p.team===0?-HALF_L:HALF_L;
+      const gdir=p.team===0?1:-1;                         // our attacking direction in z
+      const danger=Math.abs(ball.position.z-ownGoalZ)<26; // ball near our box -> commit more bodies
+      if(rank===0){
+        desired.copy(ball.position).sub(p.pos).setY(0);   // closest man goes to win the ball
+      }else if(rank===1 && danger){
+        desired.copy(ball.position).sub(p.pos).setY(0);   // second man doubles up when it's dangerous
+      }else if(p.roleIdx===STRIKER && !danger){
+        desired.set(bx-p.pos.x,0,bz-p.pos.z);             // striker holds high, ready for the counter
+      }else if(p.roleIdx===1 || (danger && rank>=2)){
+        // last defender (plus extra bodies under pressure) guards the space in front of our goal
+        const gx=THREE.MathUtils.clamp(ball.position.x*0.5,-GOAL_W-2,GOAL_W+2);
+        const cz=ownGoalZ + gdir*(p.roleIdx===1?12:17);
+        desired.set(gx-p.pos.x,0,cz-p.pos.z);
+      }else{
+        // mark the nearest dangerous opponent, standing goal-side of them
+        const m=pickMark(p);
+        if(m) desired.set(m.pos.x-p.pos.x,0,(m.pos.z-gdir*2)-p.pos.z);
+        else  desired.set(bx-p.pos.x,0,bz-p.pos.z);
+      }
+      // cpu slide-tackles the human carrier when pressing and close
+      if(p.team===1 && p.slideCd<=0 && owner && owner.team===0 && rank<=1
          && p.pos.distanceTo(owner.pos)<2.7 && Math.random()<0.07){
         p.slide=0.6; p.slideMax=0.6; p.slideCd=1.8;
       }
@@ -1406,8 +1439,10 @@ function separatePlayers(){
       let dx=a.pos.x-b.pos.x, dz=a.pos.z-b.pos.z; const d=Math.hypot(dx,dz);
       if(d<minD && d>1e-4){
         const push=(minD-d)*0.5; dx/=d; dz/=d;
-        // the ball carrier holds their ground a bit more than the challenger
-        const aw=(owner===a)?0.3:0.5, bw=(owner===b)?0.3:0.5;
+        // a frozen set-piece/kickoff taker stays planted; the ball carrier holds ground a bit more
+        const afr=(awaitKickoffPass&&a===kickoffTaker)||(throwTimer>0&&a===setPieceTaker);
+        const bfr=(awaitKickoffPass&&b===kickoffTaker)||(throwTimer>0&&b===setPieceTaker);
+        const aw=afr?0:((owner===a)?0.3:0.5), bw=bfr?0:((owner===b)?0.3:0.5);
         a.pos.x+=dx*push*aw*2; a.pos.z+=dz*push*aw*2;
         b.pos.x-=dx*push*bw*2; b.pos.z-=dz*push*bw*2;
         a.mesh.position.x=a.pos.x; a.mesh.position.z=a.pos.z;
