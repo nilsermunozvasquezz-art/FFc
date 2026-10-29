@@ -889,11 +889,14 @@ function doAction(which, power){
   if(!running||paused) return;
   power = (power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   const p=ctrlPlayer();
-  // kickoff: if YOU are taking it, any action plays a short ball to a nearby teammate to start the game
+  // kickoff: if YOU are taking it, a button plays a short ball to a teammate to start the game.
+  // Aim with the joystick (like your normal passes), else it goes to the nearest mate back/square.
   if(awaitKickoffPass && kickoffTaker && p===kickoffTaker){
     owner=kickoffTaker;                      // make sure we have the ball even if it drifted
-    const tgt=kickoffPassTarget(kickoffTaker);
-    if(tgt){ passBall(kickoffTaker,tgt,0.6); ctrl=players.indexOf(tgt); }
+    let tgt=null;
+    if(moveDir.lengthSq()>0.05){ const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize(); tgt=directionalPassTarget(kickoffTaker,jd); }
+    if(!tgt) tgt=kickoffPassTarget(kickoffTaker);
+    if(tgt){ passBall(kickoffTaker,tgt,0.65); ctrl=players.indexOf(tgt); }
     awaitKickoffPass=false; kickoffTaker=null;
     return;
   }
@@ -1548,9 +1551,9 @@ function separatePlayers(){
 
 function playerBallInteraction(dt){
   if(deadTimer>0){ owner=null; teamHasBall=false; return; }   // dead ball: no one controls it
-  // find nearest player to ball
+  // find nearest player to ball — but a player who JUST kicked can't instantly re-own it (the pass gets away)
   let near=null,nd=1e9;
-  players.forEach(p=>{if(p.sentOff)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
+  players.forEach(p=>{if(p.sentOff||(p.kickCd||0)>0.6)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
   // slide steal / possession
   if(near && nd<POSSESS){
     owner=near;
