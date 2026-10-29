@@ -852,10 +852,11 @@ function aimDir(p){
   const gz = p.team===0?HALF_L+2:-HALF_L-2;
   return new THREE.Vector3(0,0,gz).sub(p.pos).setY(0).normalize();
 }
-// pass to the teammate the joystick is pointing at (within a cone), closest one preferred
+// pass to the teammate the joystick is pointing at (within a cone), closest one preferred.
+// The goalkeeper IS allowed as a target, so you can aim a back-pass to your keeper.
 function directionalPassTarget(pl, jd){
   let best=null,bb=-1e9;
-  players.forEach(q=>{ if(q.team!==pl.team||q.gk||q===pl||q.sentOff) return;
+  players.forEach(q=>{ if(q.team!==pl.team||q===pl||q.sentOff) return;
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1.5) return; to.normalize();
     const align=to.dot(jd); if(align<0.45) return;          // only mates roughly in the aimed direction
     const sc=align*6 - dist*0.07 + (isOffside(q,pl.team)?-7:0);
@@ -1051,13 +1052,20 @@ function aiTryPass(p){
   let target=null;
   if(p.team===0){ const h=ctrlPlayer(); if(h!==p && !h.gk && !h.sentOff) target=h; }
   if(!target){
-    const dir=p.team===0?1:-1; let bb=-1e9;
+    const dir=p.team===0?1:-1; let bb=-1e9, bestOpen=0;
     players.forEach(q=>{
       if(q.team!==p.team||q.gk||q===p||q.sentOff) return;
       let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
       const sc=q.pos.z*dir + (md>4?3:0) + (isOffside(q,p.team)?-7:0);
-      if(sc>bb){bb=sc;target=q;}
+      if(sc>bb){bb=sc;target=q;bestOpen=md;}
     });
+    // deep in our own half, closed down and no open mate -> play it back to the keeper (both teams)
+    const ownGoalZ=p.team===0?-HALF_L:HALF_L;
+    let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
+    if(Math.abs(p.pos.z-ownGoalZ)<24 && opD<4 && bestOpen<3){
+      const gk=players.find(q=>q.team===p.team&&q.gk&&!q.sentOff);
+      if(gk){ passBall(p,gk); return true; }
+    }
   }
   if(!target) return false;
   passBall(p,target);
