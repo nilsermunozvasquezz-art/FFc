@@ -681,26 +681,31 @@ function kickoffRestart(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=1.8; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // hold in formation, then play
+  ctrl=1; owner=null; kickoffHold=1.3; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // brief line-up, then play
   awaitKickoffPass=false; kickoffTaker=null;
 }
 // hand the kickoff to the kicking team's striker; play only resumes once they pass to a mate
 function kickoffBegin(){
   const st=players.find(p=>p.team===kickoffTeam&&p.idx===STRIKER&&!p.sentOff) || nearestToBall(kickoffTeam,true);
   if(!st) return;
-  // put the ball right at the taker's feet so they're clearly on it, then they pass to start
+  // put the ball right at the taker's feet (on the centre spot) so they're clearly on it
   const fwd=new THREE.Vector3(Math.sin(st.heading),0,Math.cos(st.heading));
-  ball.position.set(st.pos.x+fwd.x*0.9, BALL_R, st.pos.z+fwd.z*0.9); ballVel.set(0,0,0);
+  ball.position.set(st.pos.x+fwd.x*0.6, BALL_R, st.pos.z+fwd.z*0.6); ballVel.set(0,0,0);
   owner=st; st.holdT=0;
   awaitKickoffPass=true; kickoffTaker=st;          // the opponent can't cross midfield until this pass is played
   if(kickoffTeam===0) ctrl=players.indexOf(st);    // you take the kickoff and must pass it
 }
-// kickoff is started with a short ball to the NEAREST teammate (back or square), not a long ball forward
+// kickoff / restart pass: the NEAREST mate that is behind or beside the taker (a short ball back / square,
+// never a long ball forward)
 function kickoffPassTarget(p){
+  const dir=p.team===0?1:-1;                        // the team's attacking direction in z
   let best=null,bd=1e9;
   players.forEach(q=>{ if(q.team!==p.team||q===p||q.sentOff||q.gk) return;
-    const d=q.pos.distanceTo(p.pos); if(d<bd){bd=d;best=q;} });
-  return best;
+    const back=-(q.pos.z-p.pos.z)*dir;              // + = behind the taker; skip anyone clearly ahead
+    if(back < -3) return;
+    const d=q.pos.distanceTo(p.pos); if(d<bd){bd=d;best=q;}
+  });
+  return best || players.find(q=>q.team===p.team&&q!==p&&!q.gk&&!q.sentOff);
 }
 
 /* ============ input ============ */
@@ -1570,7 +1575,9 @@ function playerBallInteraction(dt){
   // dribble: carry the ball in close control just in front of the owner's feet
   if(owner && ball.position.y<0.9 && ballVel.length()<17){
     const fwd=new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
-    const off=1.1 + Math.min((owner.speed||0)*0.075, 0.9);     // 1.1 .. ~2.0 ahead (tighter control)
+    // the kickoff/set-piece taker keeps the ball tight at their feet; otherwise carry it a bit ahead
+    const atFeet=(awaitKickoffPass&&owner===kickoffTaker)||(throwTimer>0&&owner===setPieceTaker);
+    const off=atFeet ? 0.6 : (1.1 + Math.min((owner.speed||0)*0.075, 0.9));
     const want=owner.pos.clone().addScaledVector(fwd,off); want.y=BALL_R;
     ball.position.lerp(want,Math.min(1,dt*17));                // snap to the feet so it never trails or runs away
     ballVel.multiplyScalar(0.45);
