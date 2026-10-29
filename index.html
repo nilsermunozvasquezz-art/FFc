@@ -479,16 +479,17 @@ function assignRoles(){
   });
 }
 
-/* formations (blue attacks +Z; red attacks -Z) : gk, CB, LM, RM, CM, ST */
+/* formations — one player per position, spread out (blue attacks +Z; red attacks -Z):
+   0 GK · 1 left-def · 2 right-def · 3 left-wing · 4 right-wing · 5 striker */
 const FORM=[
-  [[0,-HALF_L+2],[0,-20],[-14,-7],[14,-7],[0,3],[0,13]],     // blue
-  [[0, HALF_L-2],[0, 20],[ 14, 7],[-14, 7],[0,-3],[0,-13]]   // red mirrored
+  [[0,-HALF_L+2],[-10,-18],[10,-18],[-16,4],[16,4],[0,15]],   // blue
+  [[0, HALF_L-2],[ 10, 18],[-10, 18],[ 16,-4],[-16,-4],[0,-15]] // red mirrored
 ];
 const STRIKER=PER_TEAM-1;                              // last index = striker (5)
-// kickoff layout: every player inside their OWN half (blue z<0, red z>0)
+// kickoff layout: every player inside their OWN half, well spaced (blue z<0, red z>0)
 const KICK=[
-  [[0,-HALF_L+2],[0,-24],[-14,-13],[14,-13],[0,-6],[0,-2]],  // blue
-  [[0, HALF_L-2],[0, 24],[ 14, 13],[-14, 13],[0, 6],[0, 2]]  // red
+  [[0,-HALF_L+2],[-10,-20],[10,-20],[-16,-10],[16,-10],[0,-2]], // blue
+  [[0, HALF_L-2],[ 10, 20],[-10, 20],[ 16, 10],[-16, 10],[0, 2]] // red
 ];
 function resetPositions(kickTeam){
   assignRoles();
@@ -496,6 +497,8 @@ function resetPositions(kickTeam){
     if(p.sentOff) return;                             // stays off the pitch
     const f=KICK[p.team][p.roleIdx];
     p.base.set(f[0],0,f[1]);
+    // the team NOT kicking off lines up a bit deeper, giving the kicker room at the centre
+    if(!p.gk && p.team!==kickTeam){ p.base.z += (p.team===0?-6:6); }
     p.pos.copy(p.base); p.vel.set(0,0,0);
     // the kicking team's striker stands just behind the ball on the centre spot to take the kickoff
     if(!p.gk && p.roleIdx===STRIKER && p.team===kickTeam){
@@ -1355,17 +1358,15 @@ function stepPlayer(p,dt){
     // shift formation: push forwards into attack when we have the ball, drop back otherwise
     let bx=base[0]+ball.position.x*.35;
     let bz;
-    const deepFwd=(p.roleIdx===2||p.roleIdx===3||p.roleIdx===STRIKER);  // wingers + striker run high
+    const deepFwd=(p.roleIdx===3||p.roleIdx===4||p.roleIdx===STRIKER);  // wingers + striker run high
     if(weHave){
-      // attacking: don't send everyone up — the striker + wingers run in behind, the central mid
-      // supports, and the centre-back stays home to cover the counter
-      if(p.roleIdx===1){                                     // centre-back: holds near own half
+      // attacking: the striker leads the line and the two wings push on, while the two defenders
+      // hold near our own half to cover the counter (nobody bunches up)
+      if(p.roleIdx===1||p.roleIdx===2){                      // defenders: hold near own half
         bz=(p.team===0?-12:12) + ball.position.z*0.08;
-      }else if(p.roleIdx===4){                               // central mid: supports from the centre
-        bz=(p.team===0?8:-8) + ball.position.z*0.15;
       }else if(p.roleIdx===STRIKER){                          // striker leads the line into the box
         bz=(p.team===0?36:-36) + ball.position.z*0.12;
-      }else{                                                  // wingers (2,3): push deep and wide
+      }else{                                                  // wingers (3,4): push deep and wide
         bz=(p.team===0?30:-30) + ball.position.z*0.12;
       }
     }else{
@@ -1520,7 +1521,7 @@ function stepPlayer(p,dt){
   if((p.runGamble||0)>0) p.runGamble-=dt;
   else if(!p.gk){
     // forwards time runs in behind; the CPU's attackers gamble a little more often to make chances
-    const rate = (p.team===1 && (p.roleIdx===2||p.roleIdx===3||p.roleIdx===STRIKER)) ? dt*0.09 : dt*0.045;
+    const rate = (p.team===1 && (p.roleIdx===3||p.roleIdx===4||p.roleIdx===STRIKER)) ? dt*0.09 : dt*0.045;
     if(Math.random()<rate) p.runGamble=1.0;
   }
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else p.holdT=0;  // AI possession timer
@@ -1592,9 +1593,10 @@ function playerBallInteraction(dt){
   }else if(nd>POSSESS+1.2){
     owner=null;
   }
-  // keeper catch: grab when horizontally close and ball not too high (works mid-dive)
+  // keeper catch: grab when horizontally close and ball not too high (works mid-dive).
+  // a keeper who JUST distributed can't instantly re-grab his own throw (that was the stuck bug)
   players.forEach(p=>{
-    if(!p.gk||(p.fall||0)>0) return;
+    if(!p.gk||(p.fall||0)>0||(p.kickCd||0)>0.35) return;
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
     let reach=2.7, maxH=3.0;
     if((p.dive||0)>0){ reach=4.1; maxH=GOAL_H+0.3; }     // full-stretch dive: wide and up to the bar
