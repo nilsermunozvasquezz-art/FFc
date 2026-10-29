@@ -1247,10 +1247,23 @@ function stepPlayer(p,dt){
     // forwards hold the offside line when we attack, except on a rare timed run in behind
     if(weHave && p.roleIdx>=3 && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
     if(throwTimer>0){
-      // set-piece (foul / offside / throw-in): everyone takes up their proper formation position,
-      // the taker waits on the ball, and opponents keep their distance
+      // set-piece: players shuffle depending on the restart and whether it's for or against us.
+      // Taking side pushes UP on a throw-in / free kick (attack); the other side drops BACK to defend.
       const f=FORM[p.team][p.roleIdx];
-      const fz=f[1]*0.55 + ball.position.z*0.3;         // own lane, shifted toward the ball side
+      const dir=p.team===0?1:-1;                         // this team's attacking direction in z
+      const isTaker=(p.team===throwTeam);
+      let adv;
+      if(isTaker){
+        adv = setPieceLabel==='SAQUE DE BANDA' ? 7       // throw-in: edge up the pitch
+            : setPieceLabel==='TIRO LIBRE'     ? 9       // free kick for us: push up to attack it
+            : setPieceLabel==='SAQUE DE META'  ? 3       // goal kick: spread to receive
+            : 2;                                         // offside restart: just play it out
+      }else{
+        adv = setPieceLabel==='SAQUE DE BANDA' ? -4      // defending a throw-in: hold a touch deeper
+            : setPieceLabel==='SAQUE DE META'  ? -2
+            : -10;                                       // free kick / offside against us: drop back to defend
+      }
+      const fz=THREE.MathUtils.clamp(f[1]*0.5 + ball.position.z*0.3 + dir*adv, -HALF_L+3, HALF_L-3);
       if(owner===p) desired.set(0,0,0);
       else if(p.team!==throwTeam){
         const away=p.pos.clone().sub(ball.position).setY(0);
