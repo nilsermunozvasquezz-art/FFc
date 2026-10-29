@@ -452,17 +452,31 @@ refCard.position.set(0.62,2.45,0); refCard.visible=false; ref.add(refCard);
 let cardTimer=0;
 
 /* assistant referees (linesmen) run the touchlines and flag offside */
+// bright yellow / red checkered flag cloth (the classic assistant's flag)
+function checkerFlagTex(){
+  const c=document.createElement('canvas'); c.width=64; c.height=48;
+  const g=c.getContext('2d'); const nx=4, ny=3, cw=c.width/nx, ch=c.height/ny;
+  for(let y=0;y<ny;y++)for(let x=0;x<nx;x++){
+    g.fillStyle=((x+y)%2)?'#ffe400':'#ff1f1f';          // bright yellow & bright red squares
+    g.fillRect(x*cw,y*ch,cw+1,ch+1);
+  }
+  const t=new THREE.CanvasTexture(c);
+  if('colorSpace' in t) t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
 function makeLinesman(sideSign){
   const m=makePlayer(0xffe14a,0x101010,0xdca878);   // yellow assistant kit
   m.userData.ring.visible=false;
   const flag=new THREE.Group();
-  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,1.5,6),new THREE.MeshBasicMaterial({color:0x222222}));
-  pole.position.y=.75; flag.add(pole);
-  const cloth=new THREE.Mesh(new THREE.PlaneGeometry(.85,.5),
-    new THREE.MeshBasicMaterial({color:0xffe14a,side:THREE.DoubleSide}));
-  cloth.position.set(.42,1.25,0); flag.add(cloth);
-  flag.position.set(.45,1.4,.1); flag.rotation.z=-1.9;              // held down by default
-  m.add(flag);
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.035,.035,1.5,6),
+    new THREE.MeshBasicMaterial({color:0x202020}));
+  pole.position.y=-0.75; flag.add(pole);                 // extends down from the gripping hand
+  const cloth=new THREE.Mesh(new THREE.PlaneGeometry(.95,.6),
+    new THREE.MeshBasicMaterial({map:checkerFlagTex(),side:THREE.DoubleSide}));
+  cloth.position.set(.45,-1.2,0); flag.add(cloth);       // checkered cloth at the free end of the pole
+  flag.position.set(0,-0.72,0);                          // gripped at the hand...
+  flag.rotation.x=-0.35;                                 // held down and out (not dragging the turf)
+  m.userData.rArm.add(flag);                             // ...and carried IN the right hand, moving with it
   return {mesh:m,flag,side:sideSign,z:0,flagUp:0,heading:(sideSign>0?-Math.PI/2:Math.PI/2),u:m.userData};
 }
 const linesmen=[makeLinesman(1),makeLinesman(-1)];
@@ -490,22 +504,31 @@ function stepLinesmen(dt){
     const u=l.u; u.phase+=dt*(4+run*1.4); const amp=Math.min(0.95, 0.1+run*0.1);
     const sw=Math.sin(u.phase)*amp;
     u.lLeg.rotation.x=sw; u.rLeg.rotation.x=-sw;
-    if(l.flagUp>0){ l.flagUp-=dt; l.flag.rotation.z=-3.05; u.rArm.rotation.x=-2.7; u.lArm.rotation.x=0; }
-    else { l.flag.rotation.z=-1.9; u.lArm.rotation.x=-sw*.7; u.rArm.rotation.x=sw*.7; }
+    // the flag hangs from the right hand; raising that arm raises the flag (offside signal)
+    if(l.flagUp>0){ l.flagUp-=dt; u.rArm.rotation.x=-2.75; u.lArm.rotation.x=0; }
+    else { u.lArm.rotation.x=-sw*.7; u.rArm.rotation.x=sw*.35; }
   });
 }
 
-/* ball */
-const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,24,24),
-  new THREE.MeshStandardMaterial({color:0xffffff,roughness:.28,metalness:.05}));
+/* ball — classic black-and-white: white sphere with black pentagons */
+const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,28,28),
+  new THREE.MeshStandardMaterial({color:0xffffff,roughness:.42,metalness:.02}));
 ball.castShadow=true; scene.add(ball);
-// simple pentagon dots
-for(let i=0;i<6;i++){
-  const d=new THREE.Mesh(new THREE.CircleGeometry(.13,5),new THREE.MeshBasicMaterial({color:0x111111}));
-  const ph=Math.random()*6.28, th=Math.random()*3.14;
-  d.position.set(Math.sin(th)*Math.cos(ph)*BALL_R,Math.cos(th)*BALL_R,Math.sin(th)*Math.sin(ph)*BALL_R);
-  d.lookAt(d.position.clone().multiplyScalar(2)); ball.add(d);
-}
+// 12 black pentagons at the vertices of an icosahedron (the real soccer-ball layout)
+(function(){
+  const P=1.618034, blk=new THREE.MeshBasicMaterial({color:0x0a0a0a});
+  const verts=[[0,1,P],[0,1,-P],[0,-1,P],[0,-1,-P],
+               [1,P,0],[1,-P,0],[-1,P,0],[-1,-P,0],
+               [P,0,1],[P,0,-1],[-P,0,1],[-P,0,-1]];
+  verts.forEach(v=>{
+    const n=new THREE.Vector3(v[0],v[1],v[2]).normalize();
+    const pen=new THREE.Mesh(new THREE.CircleGeometry(0.155,5), blk);
+    pen.position.copy(n.clone().multiplyScalar(BALL_R*1.003));
+    pen.lookAt(n.clone().multiplyScalar(2));
+    pen.rotateZ(Math.random()*Math.PI);          // vary the spin so they don't all line up
+    ball.add(pen);
+  });
+})();
 const ballVel=new THREE.Vector3();
 // ball shadow disc
 const bShadow=new THREE.Mesh(new THREE.CircleGeometry(BALL_R,16),
