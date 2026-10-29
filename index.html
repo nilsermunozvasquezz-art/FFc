@@ -830,6 +830,17 @@ function aimDir(p){
   const gz = p.team===0?HALF_L+2:-HALF_L-2;
   return new THREE.Vector3(0,0,gz).sub(p.pos).setY(0).normalize();
 }
+// pass to the teammate the joystick is pointing at (within a cone), closest one preferred
+function directionalPassTarget(pl, jd){
+  let best=null,bb=-1e9;
+  players.forEach(q=>{ if(q.team!==pl.team||q.gk||q===pl||q.sentOff) return;
+    const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1.5) return; to.normalize();
+    const align=to.dot(jd); if(align<0.45) return;          // only mates roughly in the aimed direction
+    const sc=align*6 - dist*0.07 + (isOffside(q,pl.team)?-7:0);
+    if(sc>bb){bb=sc;best=q;}
+  });
+  return best;
+}
 // best teammate to pass to: ahead toward goal, open, biased by joystick aim
 function passTarget(pl){
   const dir=pl.team===0?1:-1; let best=null,bb=-1e9;
@@ -863,20 +874,31 @@ function doAction(which, power){
     }
     const pl=ctrlPlayer();
     if(pl.kickCd>0) return;
-    if(which==='B'){            // PASE to a teammate (power scales strength), then follow receiver
-      const tgt=passTarget(pl);
+    if(which==='B'){            // PASE — the joystick aims the pass (not random)
+      if(moveDir.lengthSq()>0.05){
+        const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();   // where you're pointing on screen
+        const tgt=directionalPassTarget(pl,jd);
+        if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
+        // nobody in that direction -> drive a ground ball exactly where you aim
+        ballVel.copy(jd).multiplyScalar(15+18*power); ballVel.y=0.4; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
+      }
+      const tgt=passTarget(pl);              // no aim -> pick the best open teammate forward
       if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
-      // no teammate -> fall back to a ground kick forward
-      ballVel.copy(aimDir(pl)).multiplyScalar(16+16*power); ballVel.y=0.5; pl.kickCd=0.3; owner=null;
-      showPower(pl,power); return;
+      ballVel.copy(aimDir(pl)).multiplyScalar(16+16*power); ballVel.y=0.5; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
     }
-    const dir=aimDir(pl); pl.kickCd=0.3; owner=null;
-    if(which==='A'){            // DISPARO -> toward goal, power sets how hard
+    pl.kickCd=0.3; owner=null;
+    if(which==='A'){            // DISPARO — the joystick aims which way / which corner
       const gz=pl.team===0?HALF_L:-HALF_L;
-      const target=new THREE.Vector3((Math.random()-.5)*GOAL_W*.7,0,gz).sub(ball.position).setY(0).normalize();
-      ballVel.copy(target).multiplyScalar(18+24*power); ballVel.y=2.5+2.5*power;
+      const toGoal=new THREE.Vector3(0,0,gz).sub(ball.position).setY(0).normalize();
+      let dir;
+      if(moveDir.lengthSq()>0.05){
+        const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
+        dir=jd.multiplyScalar(0.8).add(toGoal.multiplyScalar(0.3)).normalize();   // you aim; a slight goal pull keeps it honest
+      }else dir=toGoal;                      // no aim -> straight at goal (not random)
+      ballVel.copy(dir).multiplyScalar(18+24*power); ballVel.y=2.5+2.5*power;
       showPower(pl, power);
-    }else{                      // CHUTE elevado (lob/cross), power sets distance+height
+    }else{                      // ELEVADO (lob/cross) — toward where the joystick points
+      const dir=aimDir(pl);
       ballVel.copy(dir).multiplyScalar(11+13*power); ballVel.y=6+6*power;
       showPower(pl, power);
     }
@@ -1358,8 +1380,10 @@ function stepPlayer(p,dt){
     // ease the facing toward the movement direction (no robotic snapping)
     const th=Math.atan2(desired.x,desired.z);
     let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
-    p.heading+=dh*Math.min(1,dt*((p.dive||0)>0?22:11));   // snap to face the dive direction
-    p.vel.lerp(desired.multiplyScalar(spd), Math.min(1,dt*9));   // smooth acceleration
+    // the player you control turns and accelerates a bit snappier for tighter handling
+    const turnRate=(p.dive||0)>0?22:(isCtrl?15:11), accel=isCtrl?12:9;
+    p.heading+=dh*Math.min(1,dt*turnRate);
+    p.vel.lerp(desired.multiplyScalar(spd), Math.min(1,dt*accel));
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
   }
