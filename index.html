@@ -497,9 +497,9 @@ function resetPositions(kickTeam){
     const f=KICK[p.team][p.roleIdx];
     p.base.set(f[0],0,f[1]);
     p.pos.copy(p.base); p.vel.set(0,0,0);
-    // the kicking team's striker steps up to the centre spot to take the kickoff
+    // the kicking team's striker stands just behind the ball on the centre spot to take the kickoff
     if(!p.gk && p.roleIdx===STRIKER && p.team===kickTeam){
-      const cx=p.team===0?-1.5:1.5; p.pos.set(cx,0,0); p.base.set(cx,0,0);  // hold at centre
+      const cz=p.team===0?-1.0:1.0; p.pos.set(0,0,cz); p.base.set(0,0,cz);
     }
     p.mesh.position.copy(p.pos);
     p.heading = p.team===0?0:Math.PI;
@@ -688,6 +688,9 @@ function kickoffRestart(team){
 function kickoffBegin(){
   const st=players.find(p=>p.team===kickoffTeam&&p.idx===STRIKER&&!p.sentOff) || nearestToBall(kickoffTeam,true);
   if(!st) return;
+  // put the ball right at the taker's feet so they're clearly on it, then they pass to start
+  const fwd=new THREE.Vector3(Math.sin(st.heading),0,Math.cos(st.heading));
+  ball.position.set(st.pos.x+fwd.x*0.9, BALL_R, st.pos.z+fwd.z*0.9); ballVel.set(0,0,0);
   owner=st; st.holdT=0;
   awaitKickoffPass=true; kickoffTaker=st;          // the opponent can't cross midfield until this pass is played
   if(kickoffTeam===0) ctrl=players.indexOf(st);    // you take the kickoff and must pass it
@@ -880,19 +883,23 @@ function doAction(which, power){
   if(!running||paused) return;
   power = (power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   const p=ctrlPlayer();
-  // kickoff: any action plays a short ball to a nearby teammate (back or square) to start the game
-  if(awaitKickoffPass && teamHasBall && owner===kickoffTaker){
-    const tgt=kickoffPassTarget(owner);
-    if(tgt){ passBall(owner,tgt,0.6); ctrl=players.indexOf(tgt); awaitKickoffPass=false; kickoffTaker=null; }
+  // kickoff: if YOU are taking it, any action plays a short ball to a nearby teammate to start the game
+  if(awaitKickoffPass && kickoffTaker && p===kickoffTaker){
+    owner=kickoffTaker;                      // make sure we have the ball even if it drifted
+    const tgt=kickoffPassTarget(kickoffTaker);
+    if(tgt){ passBall(kickoffTaker,tgt,0.6); ctrl=players.indexOf(tgt); }
+    awaitKickoffPass=false; kickoffTaker=null;
     return;
   }
-  // any set-piece (throw-in / free kick / offside / goal kick): you MUST pass to a teammate to restart —
+  // any set-piece (throw-in / free kick / offside) you take: you MUST pass to a teammate to restart —
   // you can't shoot or play it out yourself. Aim with the joystick, or it finds the best open teammate.
-  if(throwTimer>0 && teamHasBall && owner===setPieceTaker){
+  if(throwTimer>0 && setPieceTaker && p===setPieceTaker){
+    owner=setPieceTaker;
     let tgt=null;
-    if(moveDir.lengthSq()>0.05){ const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize(); tgt=directionalPassTarget(owner,jd); }
-    if(!tgt) tgt=passTarget(owner) || kickoffPassTarget(owner);
-    if(tgt){ passBall(owner,tgt,power); ctrl=players.indexOf(tgt); setPieceTaker=null; }
+    if(moveDir.lengthSq()>0.05){ const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize(); tgt=directionalPassTarget(setPieceTaker,jd); }
+    if(!tgt) tgt=passTarget(setPieceTaker) || kickoffPassTarget(setPieceTaker);
+    if(tgt){ passBall(setPieceTaker,tgt,power); ctrl=players.indexOf(tgt); }
+    setPieceTaker=null;
     return;
   }
   if(teamHasBall){
@@ -1216,8 +1223,9 @@ function stepPlayer(p,dt){
       if(tgt){ passBall(p,tgt,0.7); awaitKickoffPass=false; kickoffTaker=null; }   // release right away
     }
     desired.set(0,0,0); p.vel.set(0,0,0);
-  }else if(awaitKickoffPass){
-    // everyone else waits in their kickoff formation (own half) until the ball is played — no attacking yet
+  }else if(awaitKickoffPass && !isCtrl){
+    // the AI waits in its kickoff formation (own half) until the ball is played — no attacking yet;
+    // the player YOU control can still move (the clamp below keeps them in their own half)
     desired.copy(p.base).sub(p.pos).setY(0);
     if(desired.lengthSq()<0.09) desired.set(0,0,0);
   }else if(throwTimer>0 && p===setPieceTaker && owner===p){
