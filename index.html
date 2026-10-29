@@ -860,7 +860,9 @@ function aimDir(p){
   // joystick direction (side-camera mapped) if pushed, else toward opponent goal
   if(moveDir.lengthSq()>0.05) return new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
   const gz = p.team===0?HALF_L+2:-HALF_L-2;
-  return new THREE.Vector3(0,0,gz).sub(p.pos).setY(0).normalize();
+  const d=new THREE.Vector3(0,0,gz).sub(p.pos).setY(0);
+  if(d.lengthSq()<0.01) d.set(0,0,p.team===0?1:-1);   // never zero -> never a straight-up ball
+  return d.normalize();
 }
 // pass to the teammate the joystick is pointing at (within a cone), closest one preferred.
 // The goalkeeper IS allowed as a target, so you can aim a back-pass to your keeper.
@@ -940,7 +942,9 @@ function doAction(which, power){
     pl.kickCd=0.3; owner=null;
     if(which==='A'){            // DISPARO — the joystick aims which way / which corner
       const gz=pl.team===0?HALF_L:-HALF_L;
-      const toGoal=new THREE.Vector3(0,0,gz).sub(ball.position).setY(0).normalize();
+      const toGoal=new THREE.Vector3(0,0,gz).sub(ball.position).setY(0);
+      if(toGoal.lengthSq()<0.01) toGoal.set(0,0,pl.team===0?1:-1);   // guard: never a zero (straight-up) shot
+      toGoal.normalize();
       let dir;
       if(moveDir.lengthSq()>0.05){
         const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
@@ -977,7 +981,9 @@ function cpuTryKick(p){
     const gk=players.find(q=>q.team===0&&q.gk);
     const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
     const tx = side*(GOAL_W*0.5-1.1) + (Math.random()-0.5)*1.4;
-    const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0).normalize();
+    const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0);
+    if(dir.lengthSq()<1) dir.set(0,0,-1);        // on the goal line the aim degenerates to zero -> never launch straight up
+    dir.normalize();
     const pw=0.85+Math.random()*0.15;
     ballVel.copy(dir).multiplyScalar(30+12*pw); ballVel.y=2.5+2.0*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
   }
