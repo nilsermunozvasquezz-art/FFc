@@ -1202,8 +1202,13 @@ function ballDeflect(){
       const nx=dx/(d||1), nz=dz/(d||1);
       ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // push the ball out of the body
       const vn=ballVel.x*nx+ballVel.z*nz;
-      if(vn<0){ const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz; }   // reflect
-      const damp=p.gk?0.5:0.8; ballVel.x*=damp; ballVel.z*=damp; ballVel.y+=p.gk?0.8:1.5;
+      // only respond when the ball is moving INTO the body; add a small, CAPPED pop so it can't
+      // stack up frame after frame into a straight-up rocket (that was the ball-to-the-sky bug)
+      if(vn<0){
+        const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz;   // reflect off the body
+        const damp=p.gk?0.5:0.85; ballVel.x*=damp; ballVel.z*=damp;     // lose a little pace
+        ballVel.y=Math.min(ballVel.y + (p.gk?0.8:1.0), p.gk?3.5:2.0);   // a low pop, capped — never vertical
+      }
     }
   }
 }
@@ -1448,9 +1453,19 @@ function stepPlayer(p,dt){
       if(p===roles.presser){
         desired.copy(ball.position).sub(p.pos).setY(0);   // whoever is nearest closes the ball down
       }else if(p===roles.cover){
-        // the deepest man guards the space in front of our goal (cover for the counter)
-        const gx=THREE.MathUtils.clamp(ball.position.x*0.5,-GOAL_W-2,GOAL_W+2);
-        desired.set(gx-p.pos.x,0,(ownGoalZ+gdir*13)-p.pos.z);
+        // the deepest man guards the space in front of our goal, but STEPS OUT to cut a counter when a
+        // rival carrier is running at us (the CPU commits hard; your defender holds off more since YOU steer)
+        const deepX=THREE.MathUtils.clamp(ball.position.x*0.5,-GOAL_W-2,GOAL_W+2);
+        const deepZ=ownGoalZ+gdir*13;
+        const toGoal=carrier?(carrier.pos.z-ownGoalZ)*gdir:999;   // carrier's distance from our goal
+        if(carrier && toGoal>2 && toGoal<42){
+          const commit = p.team===1 ? 0.6 : 0.3;                  // how far out to meet them
+          const tx=THREE.MathUtils.lerp(deepX, carrier.pos.x, commit);
+          const tz=THREE.MathUtils.lerp(deepZ, carrier.pos.z, commit);
+          desired.set(tx-p.pos.x,0,tz-p.pos.z);
+        }else{
+          desired.set(deepX-p.pos.x,0,deepZ-p.pos.z);
+        }
       }else if(p===roles.outlet && !rightOnGoal){
         desired.set(bx-p.pos.x,0,bz-p.pos.z);             // the highest man stays up, ready for the counterattack
       }else if((veryClose||rightOnGoal) && rank<=1){
