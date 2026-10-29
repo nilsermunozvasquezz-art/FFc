@@ -303,6 +303,69 @@ function buildPitch(){
 }
 buildPitch();
 
+/* ============ stadium: running track, tiered stands with a crowd, roof & floodlights ============ */
+function crowdTex(){
+  const c=document.createElement('canvas'); c.width=256; c.height=64;
+  const g=c.getContext('2d'); g.fillStyle='#161a21'; g.fillRect(0,0,256,64);
+  const cols=['#eaeaea','#e23b3b','#2a6cff','#ffd21a','#19c268','#ff8c1a','#bfc6cf','#9b59b6','#e67e22'];
+  for(let i=0;i<4200;i++){ g.fillStyle=cols[(Math.random()*cols.length)|0];
+    g.fillRect((Math.random()*256)|0,(Math.random()*64)|0,2,2); }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  if('colorSpace' in t) t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+function buildStadium(){
+  const crowdMat=new THREE.MeshStandardMaterial({map:crowdTex(),roughness:1});
+  const concrete=new THREE.MeshStandardMaterial({color:0x8d97a5,roughness:.95});
+  const roofMat=new THREE.MeshStandardMaterial({color:0x272e39,roughness:.9,metalness:.1,side:THREE.DoubleSide});
+  const trackMat=new THREE.MeshStandardMaterial({color:0xa5493a,roughness:1});     // reddish athletics track
+  const steps=6, stepH=2.1, stepW=3.4;
+  // reddish surround track just outside the lines
+  const tr=new THREE.Mesh(new THREE.PlaneGeometry((HALF_W+9)*2,(HALF_L+9)*2),trackMat);
+  tr.rotation.x=-Math.PI/2; tr.position.y=-0.01; tr.receiveShadow=true; scene.add(tr);
+  function bank(cx,cz,rotY,length){
+    const g=new THREE.Group(); g.position.set(cx,0,cz); g.rotation.y=rotY;
+    const map=crowdMat.map.clone(); map.needsUpdate=true; map.repeat.set(length/7, steps*0.9);
+    const bm=new THREE.MeshStandardMaterial({map,roughness:1});
+    for(let i=0;i<steps;i++){
+      const riser=new THREE.Mesh(new THREE.BoxGeometry(length, stepH, 0.35), i===0?bm:bm);
+      riser.position.set(0, stepH*(i+0.5)+0.4, 2.2 + i*stepW); riser.castShadow=true; g.add(riser);
+      const tread=new THREE.Mesh(new THREE.BoxGeometry(length, 0.3, stepW-0.3), concrete);
+      tread.position.set(0, stepH*(i+1)+0.4, 2.2 + i*stepW + stepW/2); g.add(tread);
+    }
+    // front wall / advertising boards
+    const wall=new THREE.Mesh(new THREE.BoxGeometry(length,1.3,0.5),
+      new THREE.MeshStandardMaterial({color:0x11386e,roughness:.6}));
+    wall.position.set(0,0.65,1.4); g.add(wall);
+    // roof
+    const roof=new THREE.Mesh(new THREE.BoxGeometry(length+3,0.5,steps*stepW+3),roofMat);
+    roof.position.set(0, stepH*steps+3.4, 2.2+steps*stepW/2); roof.rotation.x=-0.18; g.add(roof);
+    scene.add(g);
+  }
+  const L1=HALF_L*2+24, L2=HALF_W*2+24;
+  bank(-(HALF_W+6),0,-Math.PI/2,L1);     // far long side (main view)
+  bank(0,-(HALF_L+6), Math.PI,  L2);     // end stands
+  bank(0, (HALF_L+6), 0,        L2);
+  // near long side (camera side): low ad boards only (runs along the touchline), so it doesn't block the view
+  const nearWall=new THREE.Mesh(new THREE.BoxGeometry(0.5,1.3,L1),
+    new THREE.MeshStandardMaterial({color:0x11386e,roughness:.6}));
+  nearWall.position.set(HALF_W+6,0.65,0); scene.add(nearWall);
+  // floodlight pylons at the corners
+  const poleMat=new THREE.MeshStandardMaterial({color:0x3a414c,roughness:.7,metalness:.3});
+  const lampMat=new THREE.MeshBasicMaterial({color:0xfdfbe6});
+  [[-1,-1],[1,-1],[1,1],[-1,1]].forEach(c=>{
+    const px=c[0]*(HALF_W+12), pz=c[1]*(HALF_L+12);
+    const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.7,26,8),poleMat);
+    pole.position.set(px,13,pz); pole.castShadow=true; scene.add(pole);
+    const rig=new THREE.Mesh(new THREE.BoxGeometry(5,2.4,0.6),poleMat);
+    rig.position.set(px,25.5,pz); rig.lookAt(0,10,0); scene.add(rig);
+    for(let a=0;a<3;a++)for(let b=0;b<2;b++){
+      const lamp=new THREE.Mesh(new THREE.BoxGeometry(1.3,0.9,0.2),lampMat);
+      lamp.position.set(px+(a-1)*1.5,25.5+(b-0.5)*1.0,pz); lamp.lookAt(0,8,0); scene.add(lamp);
+    }
+  });
+}
+buildStadium();
+
 /* ============ goals ============ */
 function buildGoal(zside){
   const g=new THREE.Group();
@@ -1110,8 +1173,8 @@ function stepPlayer(p,dt){
     p.gkReact=false;
     const pred=predictAtGoalLine(p.team);
     const bspd=Math.hypot(ballVel.x,ballVel.z);
-    const shot = pred && Math.abs(pred.x)<GOAL_W/2+4 && pred.y<GOAL_H+1.0
-      && bspd>5 && !(owner&&owner.team===p.team);
+    const shot = pred && Math.abs(pred.x)<GOAL_W/2+4.5 && pred.y<GOAL_H+1.0
+      && bspd>4.5 && !(owner&&owner.team===p.team);
     if(shot){
       p.gkReact=true;
       tx=THREE.MathUtils.clamp(pred.x,-GOAL_W/2-3,GOAL_W/2+3);
@@ -1120,12 +1183,30 @@ function stepPlayer(p,dt){
       const out = highBall ? Math.min(5.5, pred.t*2.6) : Math.min(1.4, pred.t*0.6);
       tz = gz + (p.team===0?out:-out);
       // dive timed to be at full stretch WHEN the ball arrives — covers low, intermediate and high shots
-      if(pred.t<0.82 && Math.abs(pred.x-p.pos.x)>0.55 && (p.dive||0)<=0){
-        p.diveMax=Math.max(0.5, pred.t+0.24); p.dive=p.diveMax;
+      if(pred.t<0.9 && Math.abs(pred.x-p.pos.x)>0.45 && (p.dive||0)<=0){
+        p.diveMax=Math.max(0.5, pred.t+0.26); p.dive=p.diveMax;
+      }
+    }
+    // sweeper-keeper: now and then rush OUT to cut a counter — a loose ball or a rival carrier
+    // that has got in behind the defence, with no teammate goal-side of it
+    let swept=false;
+    if(!shot){
+      const goalZ=p.team===0?-HALF_L:HALF_L;
+      const ballToGoal=Math.abs(ball.position.z-goalZ);
+      const oppOrLoose = !owner || owner.team!==p.team;
+      let defGoalSide=false;
+      players.forEach(q=>{ if(q.team===p.team&&!q.gk&&!q.sentOff &&
+        Math.abs(q.pos.z-goalZ) < ballToGoal-1.5) defGoalSide=true; });
+      if(oppOrLoose && !defGoalSide && ballToGoal<24 && Math.abs(ball.position.x)<17){
+        swept=true; p.gkReact=true;
+        tx=THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W);
+        const maxOut=p.team===0?-HALF_L+15:HALF_L-15;                 // don't stray more than ~15 off the line
+        tz=p.team===0?Math.max(Math.min(ball.position.z,-HALF_L+1),maxOut)
+                     :Math.min(Math.max(ball.position.z, HALF_L-1),maxOut);
       }
     }
     // rush out for a loose ball very close to goal (don't abandon the line otherwise)
-    const near=!shot && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<7
+    const near=!shot && !swept && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<7
       && Math.abs(ball.position.x)<GOAL_W/2+2
       && (p.team===0?ball.position.z<gz+6:ball.position.z>gz-6);
     if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-3,p.team===0?gz+3:HALF_L-1);}
@@ -1219,8 +1300,8 @@ function stepPlayer(p,dt){
   let spd = p.gk?7.8:(isCtrl?(sprint?13:9.5):(p.team===1?9.7:8.8));
   if(deadTimer>0) spd=Math.min(spd,4.5);    // relaxed jog while the ball is dead
   if(p.slide>0) spd=15;
-  if(p.gk && p.gkReact) spd=Math.max(spd,15.5);  // keeper springs across to cover a shot
-  if((p.dive||0)>0) spd=Math.max(spd,23);   // keeper dive lunge (sharper reflexes)
+  if(p.gk && p.gkReact) spd=Math.max(spd,17);    // keeper springs across to cover a shot / sweep
+  if((p.dive||0)>0) spd=Math.max(spd,24);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
   if(owner===p && p.team===1) spd=Math.max(spd,11.3);  // red runs with the ball
@@ -1246,6 +1327,12 @@ function stepPlayer(p,dt){
     if(d<9.5 && d>0.01){ const s=9.5/d; p.pos.x*=s; p.pos.z*=s; }   // stay out of the centre circle
     if(p.team===0) p.pos.z=Math.min(p.pos.z,-1.2);
     else           p.pos.z=Math.max(p.pos.z, 1.2);
+  }
+  // on any set-piece (foul / offside / throw-in), the defending team must keep clear of the ball
+  // until it is taken — they can't close in
+  if(throwTimer>0 && p.team!==throwTeam && !p.gk){
+    const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z, d=Math.hypot(dx,dz);
+    if(d<8 && d>0.01){ const s=8/d; p.pos.x=ball.position.x+dx*s; p.pos.z=ball.position.z+dz*s; }
   }
   p.speed=p.vel.length();
 
@@ -1332,9 +1419,9 @@ function playerBallInteraction(dt){
   players.forEach(p=>{
     if(!p.gk||(p.fall||0)>0) return;
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
-    let reach=2.6, maxH=3.0;
-    if((p.dive||0)>0){ reach=3.9; maxH=GOAL_H+0.3; }     // full-stretch dive: wide and up to the bar
-    else if(p.gkReact){ reach=3.2; maxH=GOAL_H; }        // set and reacting: can claim high balls too
+    let reach=2.7, maxH=3.0;
+    if((p.dive||0)>0){ reach=4.1; maxH=GOAL_H+0.3; }     // full-stretch dive: wide and up to the bar
+    else if(p.gkReact){ reach=3.4; maxH=GOAL_H; }        // set and reacting / sweeping: wide reach
     if(Math.hypot(dx,dz)<reach && ball.position.y<maxH) owner=p;
   });
   // DLS-style auto-switch: hand control to whichever blue outfielder has the ball, so your
@@ -1343,13 +1430,13 @@ function playerBallInteraction(dt){
   teamHasBall = !!(owner && owner.team===0);
   if(owner) lastTouch=owner.team;              // remember who touched it last (for throw-ins)
 
-  // dribble: carry the ball clearly in FRONT of the owner (further ahead the faster they run)
-  if(owner && ball.position.y<0.8 && ballVel.length()<16){
+  // dribble: carry the ball in close control just in front of the owner's feet
+  if(owner && ball.position.y<0.9 && ballVel.length()<17){
     const fwd=new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
-    const off=1.35 + Math.min((owner.speed||0)*0.1, 1.1);       // 1.35 .. ~2.45 ahead
+    const off=1.1 + Math.min((owner.speed||0)*0.075, 0.9);     // 1.1 .. ~2.0 ahead (tighter control)
     const want=owner.pos.clone().addScaledVector(fwd,off); want.y=BALL_R;
-    ball.position.lerp(want,Math.min(1,dt*13));                 // keep up so it never trails
-    ballVel.multiplyScalar(0.55);
+    ball.position.lerp(want,Math.min(1,dt*17));                // snap to the feet so it never trails or runs away
+    ballVel.multiplyScalar(0.45);
     // slide tackle knocks ball away
     if(owner.slide>0){ ballVel.copy(fwd).multiplyScalar(10); ballVel.y=2; }
   }
