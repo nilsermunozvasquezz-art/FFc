@@ -1320,24 +1320,26 @@ function stepPlayer(p,dt){
       if(acted) desired.set(0,0,0);
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
     }else if(!weHave){
-      // realistic defending — share the jobs instead of everyone chasing the same man
+      // realistic defending — the jobs are always SHARED, never everyone on the ball:
+      //   nearest wins it · last man covers the box · striker waits for the counter · the rest mark
       const rank=ballRank(p);
       const ownGoalZ=p.team===0?-HALF_L:HALF_L;
       const gdir=p.team===0?1:-1;                         // our attacking direction in z
-      const danger=Math.abs(ball.position.z-ownGoalZ)<26; // ball near our box -> commit more bodies
+      const carrier=(owner&&owner.team!==p.team)?owner:null;
+      const veryClose=carrier && p.pos.distanceTo(carrier.pos)<4.2;
+      const rightOnGoal=Math.abs(ball.position.z-ownGoalZ)<15;   // ball truly on top of our box
       if(rank===0){
-        desired.copy(ball.position).sub(p.pos).setY(0);   // closest man goes to win the ball
-      }else if(rank===1 && danger){
-        desired.copy(ball.position).sub(p.pos).setY(0);   // second man doubles up when it's dangerous
-      }else if(p.roleIdx===STRIKER && !danger){
-        desired.set(bx-p.pos.x,0,bz-p.pos.z);             // striker holds high, ready for the counter
-      }else if(p.roleIdx===1 || (danger && rank>=2)){
-        // last defender (plus extra bodies under pressure) guards the space in front of our goal
+        desired.copy(ball.position).sub(p.pos).setY(0);   // the closest man goes to win the ball
+      }else if(p.roleIdx===1){
+        // last defender ALWAYS guards the space in front of our goal (the counter cover)
         const gx=THREE.MathUtils.clamp(ball.position.x*0.5,-GOAL_W-2,GOAL_W+2);
-        const cz=ownGoalZ + gdir*(p.roleIdx===1?12:17);
-        desired.set(gx-p.pos.x,0,cz-p.pos.z);
+        desired.set(gx-p.pos.x,0,(ownGoalZ+gdir*13)-p.pos.z);
+      }else if(p.roleIdx===STRIKER && !rightOnGoal){
+        desired.set(bx-p.pos.x,0,bz-p.pos.z);             // striker stays high, ready for the counterattack
+      }else if(rank===1 && (veryClose||rightOnGoal)){
+        desired.copy(ball.position).sub(p.pos).setY(0);   // a SECOND man doubles up only when it's really on
       }else{
-        // mark the nearest dangerous opponent, standing goal-side of them
+        // otherwise, mark the nearest opponent, standing goal-side of them
         const m=pickMark(p);
         if(m) desired.set(m.pos.x-p.pos.x,0,(m.pos.z-gdir*2)-p.pos.z);
         else  desired.set(bx-p.pos.x,0,bz-p.pos.z);
@@ -1358,8 +1360,8 @@ function stepPlayer(p,dt){
     }else{
       desired.set(bx-p.pos.x,0,bz-p.pos.z);
     }
-    // extra pressing teammates (blue) when PRESIÓN active
-    if(p.team===0 && pressTimer>0 && !weHave){
+    // PRESIÓN: pulls only the two nearest blue defenders onto the ball, the rest keep their shape
+    if(p.team===0 && pressTimer>0 && !weHave && ballRank(p)<=1){
       desired.copy(ball.position).sub(p.pos).setY(0);
     }
   }
