@@ -658,6 +658,7 @@ let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
 let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='', setPieceTaker=null, setPieceGK=false;   // set-piece state
 let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then the restart is set up
 let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pass; foes held in their half until then
+let koGrace=0;                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
 function scheduleRestart(delay, label, fn){
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
   throwTimer=0;                              // a new whistle supersedes any pending set-piece
@@ -895,7 +896,7 @@ function doAction(which, power){
     owner=kickoffTaker;                      // make sure we have the ball even if it drifted
     const tgt=kickoffPassTarget(kickoffTaker);   // the kickoff is always a short ball BACK/square to a mate
     if(tgt){ passBall(kickoffTaker,tgt,0.65); ctrl=players.indexOf(tgt); }
-    awaitKickoffPass=false; kickoffTaker=null;
+    awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8;   // grace: foes hold their shape, don't rush in
     return;
   }
   // any set-piece (throw-in / free kick / offside) you take: you MUST pass to a teammate to restart —
@@ -1010,9 +1011,12 @@ function passBall(p,target,power){
     scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
-  // lead a moving receiver so the ball arrives at their feet (by the pass's estimated flight time)
+  const ps=0.75+0.45*power;                // power multiplier on strike strength
+  // lead a moving receiver so the ball arrives at their FEET: estimate the ground speed first, then
+  // lead by the actual flight time (dist / speed), so the pass is weighted right instead of over-hit
   const rough=ball.position.distanceTo(target.pos);
-  const flight=THREE.MathUtils.clamp(rough/24, 0.1, 0.7);
+  const estSp=THREE.MathUtils.clamp(rough*2.1, 16, 50)*ps;
+  const flight=THREE.MathUtils.clamp(rough/Math.max(estSp,1), 0.08, 0.6);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(flight):new THREE.Vector3();
   const aim=target.pos.clone().add(lead); aim.y=0;
   const v=aim.clone().sub(ball.position).setY(0); const dist=v.length();
@@ -1030,12 +1034,11 @@ function passBall(p,target,power){
       }
     });
   }
-  const ps=0.75+0.45*power;                // power multiplier on strike strength
   if(blocked){                             // a LOW chip over the defender, dropping on the mate (not a big lob)
     const T=THREE.MathUtils.clamp(dist/28,0.55,0.95);
     ballVel.copy(v).multiplyScalar(dist/T*1.1*ps); ballVel.y=GRAV*T/2*0.85;
   }else{                                   // crisp ground pass, weighted to land right on the receiver
-    const sp=THREE.MathUtils.clamp(dist*2.15, 17, 52)*ps;
+    const sp=THREE.MathUtils.clamp(dist*2.1, 16, 50)*ps;
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.22;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
@@ -1136,7 +1139,7 @@ function resolveTackles(){
 
 /* PRESIONAR steal: while pressing, a blue player reaching the rival carrier wins the ball */
 function pressSteal(){
-  if(awaitKickoffPass) return;                 // no stealing during a kickoff
+  if(awaitKickoffPass || koGrace>0) return;     // no stealing during a kickoff or its settling grace
   if(pressTimer<=0 || !(owner && owner.team===1)) return;
   const carrier=owner;
   for(const p of players){
@@ -1155,7 +1158,7 @@ function pressSteal(){
 
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
 function cpuSteal(){
-  if(awaitKickoffPass) return;                 // no stealing during a kickoff
+  if(awaitKickoffPass || koGrace>0) return;     // no stealing during a kickoff or its settling grace
   if(!(owner && owner.team===0)) return;
   const carrier=owner;
   for(const p of players){
@@ -1253,7 +1256,7 @@ function stepPlayer(p,dt){
     if(p.koWait>0.7){
       const tgt=kickoffPassTarget(p);                   // nearest mate behind/beside — never a ball forward
       if(tgt){ passBall(p,tgt,0.7); if(p.team===0) ctrl=players.indexOf(tgt); }  // you take over the receiver
-      awaitKickoffPass=false; kickoffTaker=null;
+      awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8;   // grace: foes hold their shape, don't rush in
     }
     desired.set(0,0,0); p.vel.set(0,0,0);
   }else if(awaitKickoffPass && !isCtrl){
@@ -1337,6 +1340,14 @@ function stepPlayer(p,dt){
       desired.set(0,0,0);
       if(p.gkHold>0.6){ gkPass(p); p.gkHold=0; }
     }else{ p.gkHold=0; }
+  }else if(koGrace>0 && p.team!==kickoffTeam && !(owner&&owner.team===p.team)){
+    // just after a kickoff: the team that didn't kick off holds its kickoff shape in its OWN half and
+    // does NOT burst out to steal — so it can't poke into the pass lane or swarm the ball
+    const f=KICK[p.team][p.roleIdx];
+    let tz=f[1] + ball.position.z*0.1;
+    tz = p.team===0 ? Math.min(tz,-1.5) : Math.max(tz,1.5);   // never step over the halfway line
+    desired.set(f[0]+ball.position.x*0.2 - p.pos.x, 0, tz - p.pos.z);
+    if(desired.lengthSq()<0.3) desired.set(0,0,0);
   }else{
     const myChaser = p.team===0?chaser0:chaser1;
     const weHave = owner && owner.team===p.team;
@@ -1904,8 +1915,9 @@ function loop(now){
       if(awaitKickoffPass){
         const passed = owner!==kickoffTaker;                                   // the taker played the ball
         const crossed = kickoffTeam===0 ? ball.position.z>8 : ball.position.z<-8;  // or carried it well upfield
-        if(passed || crossed){ awaitKickoffPass=false; kickoffTaker=null; }
+        if(passed || crossed){ awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8; }
       }
+      if(koGrace>0) koGrace-=dt;
       stepBall(dt);
       ballDeflect();
       stepReferee(dt); stepLinesmen(dt);
