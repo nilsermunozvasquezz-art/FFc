@@ -662,6 +662,7 @@ let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='', setPieceTaker=null
 let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then the restart is set up
 let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pass; foes held in their half until then
 let koGrace=0;                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
+let passReceiver=null, passSeekT=0;   // the mate a pass is heading to moves to meet it, so passes connect
 function scheduleRestart(delay, label, fn){
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
   throwTimer=0;                              // a new whistle supersedes any pending set-piece
@@ -866,9 +867,10 @@ function aimDir(p){
 function directionalPassTarget(pl, jd){
   let best=null,bb=-1e9;
   players.forEach(q=>{ if(q.team!==pl.team||q===pl||q.sentOff) return;
+    if(isOffside(q,pl.team)) return;                         // don't aim a pass into an offside mate
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1.5) return; to.normalize();
     const align=to.dot(jd); if(align<0.45) return;          // only mates roughly in the aimed direction
-    const sc=align*6 - dist*0.07 + (isOffside(q,pl.team)?-7:0);
+    const sc=align*6 - dist*0.07;
     if(sc>bb){bb=sc;best=q;}
   });
   return best;
@@ -879,12 +881,13 @@ function passTarget(pl){
   const aim=aimDir(pl);
   players.forEach(q=>{
     if(q.team!==pl.team||q.gk||q===pl||q.sentOff) return;
+    if(isOffside(q,pl.team)) return;                         // never pick an offside mate -> no false offside calls
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1)return; to.normalize();
     let md=1e9; players.forEach(d=>{if(d.team!==pl.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
     const ahead=(q.pos.z-pl.pos.z)*dir;
     // strongly prefer an OPEN teammate (fewer intercepted passes) and penalise a tightly-marked one
     const open=(md>6?5:md>4?3:md>2.5?1:0) - (md<2?4:0);
-    const sc=ahead*1.1 + to.dot(aim)*5 + open - dist*0.1 + (isOffside(q,pl.team)?-7:0);
+    const sc=ahead*1.1 + to.dot(aim)*5 + open - dist*0.1;
     if(sc>bb){bb=sc;best=q;}
   });
   return best;
@@ -1045,6 +1048,8 @@ function passBall(p,target,power){
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.22;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
+  // the intended receiver moves to meet the ball for a moment, so the pass actually connects
+  if(target && target.team===p.team && !target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(dist/16,0.4,1.4); }
   if(throwTimer>0) throwTimer=0;                            // a throw-in was taken
   showPower(p, power);                                     // pass/throw power bar
 }
@@ -1360,10 +1365,12 @@ function stepPlayer(p,dt){
     let bz;
     const deepFwd=(p.roleIdx===3||p.roleIdx===4||p.roleIdx===STRIKER);  // wingers + striker run high
     if(weHave){
-      // attacking: the striker leads the line and the two wings push on, while the two defenders
-      // hold near our own half to cover the counter (nobody bunches up)
-      if(p.roleIdx===1||p.roleIdx===2){                      // defenders: hold near own half
+      // attacking: the striker + both wings push on and ONE defender steps up to support the counter,
+      // while the OTHER defender stays home to cover — so the whole team joins in but one stays back
+      if(p.roleIdx===1){                                     // one defender holds deep as the lone cover
         bz=(p.team===0?-12:12) + ball.position.z*0.08;
+      }else if(p.roleIdx===2){                               // the other defender pushes up to support play
+        bz=(p.team===0?6:-6) + ball.position.z*0.22;
       }else if(p.roleIdx===STRIKER){                          // striker leads the line into the box
         bz=(p.team===0?36:-36) + ball.position.z*0.12;
       }else{                                                  // wingers (3,4): push deep and wide
@@ -1380,7 +1387,10 @@ function stepPlayer(p,dt){
     bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
     // forwards hold the offside line when we attack, except on a rare timed run in behind
     if(weHave && deepFwd && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
-    if(throwTimer>0){
+    if(passReceiver===p && passSeekT>0 && owner!==p && throwTimer<=0){
+      // a pass is coming to me: move to meet the ball so it connects instead of running past it
+      desired.copy(ball.position).sub(p.pos).setY(0);
+    }else if(throwTimer>0){
       // set-piece: players shuffle depending on the restart and whether it's for or against us.
       // Taking side pushes UP on a throw-in / free kick (attack); the other side drops BACK to defend.
       const f=FORM[p.team][p.roleIdx];
@@ -1920,6 +1930,7 @@ function loop(now){
         if(passed || crossed){ awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8; }
       }
       if(koGrace>0) koGrace-=dt;
+      if(passSeekT>0){ passSeekT-=dt; if(passSeekT<=0||owner===passReceiver||(owner&&owner!==passReceiver)) passReceiver=null; }
       stepBall(dt);
       ballDeflect();
       stepReferee(dt); stepLinesmen(dt);
