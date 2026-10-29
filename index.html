@@ -974,15 +974,8 @@ function cpuTryKick(p){
     const pw=0.85+Math.random()*0.15;
     ballVel.copy(dir).multiplyScalar(30+12*pw); ballVel.y=2.5+2.0*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
   }
-  // only lay it off if a teammate is clearly better placed; otherwise drive at goal yourself
-  let best=null,bz=1e9;
-  players.forEach(q=>{
-    if(q.team!==1||q.gk||q===p||q.sentOff) return;
-    if(q.pos.z < bz && q.pos.z < p.pos.z-3 && !isOffside(q,1)){
-      let md=1e9; players.forEach(d=>{if(d.team===0&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
-      if(md>3){ bz=q.pos.z; best=q; }
-    }
-  });
+  // near the box: lay it off to the best-placed open mate, or keep driving at goal yourself
+  const best=bestPassTarget(p);
   if(best && Math.random()<0.55){ passBall(p,best); return true; }   // mix passing with carrying forward
   return false;                                                       // else keep driving toward goal
 }
@@ -1050,23 +1043,48 @@ function passBall(p,target,power){
   showPower(p, power);                                     // pass/throw power bar
 }
 
-/* AI open-play pass. Blue carriers feed the human; others find an advanced open mate. */
+/* Pick the best teammate to pass to: an OPEN man, reachable, with a clear lane and sensible
+   forward progress — so passes find feet instead of being hit hopefully to wherever. */
+function bestPassTarget(p, allowGK){
+  const dir=p.team===0?1:-1;
+  let best=null, bb=-1e9;
+  players.forEach(q=>{
+    if(q.team!==p.team||q===p||q.sentOff) return;
+    if(q.gk && !allowGK) return;
+    if(isOffside(q,p.team)) return;                     // never slide a pass into an offside mate
+    const to=q.pos.clone().sub(p.pos).setY(0); const dist=to.length();
+    if(dist<2.5 || dist>40) return;                     // too tight / a hopeful long ball
+    to.normalize();
+    // how much space the receiver has (distance to the nearest opponent)
+    let md=1e9; players.forEach(d=>{ if(d.team===p.team||d.gk) return; md=Math.min(md,d.pos.distanceTo(q.pos)); });
+    // is a defender standing in the passing lane between the two?
+    let laneBlock=0;
+    players.forEach(d=>{ if(d.team===p.team||d.gk) return;
+      const rel=d.pos.clone().sub(p.pos).setY(0); const along=rel.dot(to);
+      if(along>1.5 && along<dist-1.0){ const perp=rel.addScaledVector(to,-along).length();
+        if(perp<1.9) laneBlock=Math.max(laneBlock, 1.9-perp); } });
+    const forward=(q.pos.z-p.pos.z)*dir;                // + = the ball goes forward
+    const sc = Math.min(md,8)*1.5                       // reward a man in space (capped)
+             + THREE.MathUtils.clamp(forward,-6,16)*0.55// forward is good, but not demanded
+             - Math.max(0,dist-22)*0.45                 // penalise over-long passes
+             - laneBlock*4.0                            // a blocked lane is heavily punished
+             - (dist<5?1.5:0);                          // slight bias against tiny square balls
+    if(sc>bb){ bb=sc; best=q; }
+  });
+  return best;
+}
+
+/* AI open-play pass. Blue carriers feed the human; the CPU finds its best open mate. */
 function aiTryPass(p){
   if(p.kickCd>0) return false;
   let target=null;
   if(p.team===0){ const h=ctrlPlayer(); if(h!==p && !h.gk && !h.sentOff) target=h; }
   if(!target){
-    const dir=p.team===0?1:-1; let bb=-1e9, bestOpen=0;
-    players.forEach(q=>{
-      if(q.team!==p.team||q.gk||q===p||q.sentOff) return;
-      let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
-      const sc=q.pos.z*dir + (md>4?3:0) + (isOffside(q,p.team)?-7:0);
-      if(sc>bb){bb=sc;target=q;bestOpen=md;}
-    });
-    // deep in our own half, closed down and no open mate -> play it back to the keeper (both teams)
+    target=bestPassTarget(p);
+    // deep in our own half, closed down and no good option -> play it back to the keeper (both teams)
     const ownGoalZ=p.team===0?-HALF_L:HALF_L;
     let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
-    if(Math.abs(p.pos.z-ownGoalZ)<24 && opD<4 && bestOpen<3){
+    if(!target && Math.abs(p.pos.z-ownGoalZ)<24 && opD<5){
       const gk=players.find(q=>q.team===p.team&&q.gk&&!q.sentOff);
       if(gk){ passBall(p,gk); return true; }
     }
