@@ -757,7 +757,7 @@ function doAction(which, power){
       pressTimer=2.4;
       const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n);
     }
-    else if(which==='A'){ if(p.slideCd<=0){p.slide=0.5; p.slideCd=1.4;} } // slide tackle
+    else if(which==='A'){ if(p.slideCd<=0){p.slide=0.5; p.slideMax=0.5; p.slideCd=1.4;} } // slide tackle
   }
 }
 
@@ -962,6 +962,24 @@ function ballDeflect(){
   }
 }
 
+/* Keeper read: roll the ball forward (same physics as stepBall) to where it crosses this
+   team's goal line, so the keeper can get across and dive in time instead of reacting late. */
+function predictAtGoalLine(team){
+  const goalLineZ = team===0?-HALF_L:HALF_L;
+  const toward = (team===0 && ballVel.z<0) || (team===1 && ballVel.z>0);
+  if(!toward) return null;
+  let x=ball.position.x, y=ball.position.y, z=ball.position.z;
+  let vx=ballVel.x, vy=ballVel.y, vz=ballVel.z; const h=0.02; let t=0;
+  for(let i=0;i<260;i++){
+    vy-=26*h; x+=vx*h; y+=vy*h; z+=vz*h; t+=h;
+    if(y<BALL_R){ y=BALL_R; vy*=-0.48; if(Math.abs(vy)<1.3)vy=0;
+      const fr=Math.pow(0.12,h); vx*=fr; vz*=fr; }
+    else { const fr=Math.pow(0.85,h); vx*=fr; vz*=fr; }
+    if((team===0 && z<=goalLineZ) || (team===1 && z>=goalLineZ)) return {x,y,t};
+  }
+  return null;
+}
+
 /* ============ update ============ */
 function stepPlayer(p,dt){
   // movement target
@@ -1013,25 +1031,28 @@ function stepPlayer(p,dt){
       desired.copy(tgt).sub(p.pos).setY(0);
     }
   }else if(p.gk){
-    // goalkeeper: hold the line and track the ball; DIVE to the predicted shot spot
+    // goalkeeper: hold the line and track the ball; read the shot's path and dive to cut it out
     const gz=p.team===0?-HALF_L+1.2:HALF_L-1.2;
-    const goalLineZ=p.team===0?-HALF_L:HALF_L;
     let tx=THREE.MathUtils.clamp(ball.position.x*.9,-GOAL_W/2-0.3,GOAL_W/2+0.3);  // stay centered on the ball
     let tz=gz;
-    const toOwnGoal=(p.team===0&&ballVel.z<-3)||(p.team===1&&ballVel.z>3);
-    if(toOwnGoal && ballVel.z!==0){
-      const tTo=(goalLineZ-ball.position.z)/ballVel.z;
-      if(tTo>0 && tTo<2.3){                        // react to shots from much further out
-        const predX=ball.position.x+ballVel.x*tTo;
-        if(Math.abs(predX)<GOAL_W/2+3.5){
-          tx=THREE.MathUtils.clamp(predX,-GOAL_W/2-2.5,GOAL_W/2+2.5);
-          tz=gz;
-          if(Math.abs(predX-p.pos.x)>0.6) p.dive=Math.max(p.dive||0,0.5);  // dive readily
-        }
+    p.gkReact=false;
+    const pred=predictAtGoalLine(p.team);
+    const bspd=Math.hypot(ballVel.x,ballVel.z);
+    const shot = pred && Math.abs(pred.x)<GOAL_W/2+4 && pred.y<GOAL_H+1.5
+      && bspd>7 && !(owner&&owner.team===p.team);
+    if(shot){
+      // get across to where the ball will arrive; step off the line a touch to narrow the angle
+      p.gkReact=true;
+      tx=THREE.MathUtils.clamp(pred.x,-GOAL_W/2-3,GOAL_W/2+3);
+      const out=Math.min(2.2, pred.t*0.7);
+      tz=gz + (p.team===0?out:-out);
+      // launch a full-stretch dive once the ball is almost there and it's across from us
+      if(pred.t<1.15 && Math.abs(pred.x-p.pos.x)>0.75 && (p.dive||0)<=0){
+        p.dive=0.62; p.diveMax=0.62;
       }
     }
-    // only rush out for a loose ball very close to goal (don't abandon the line)
-    const near=!toOwnGoal && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<7
+    // rush out for a loose ball very close to goal (don't abandon the line otherwise)
+    const near=!shot && ball.position.distanceTo(new THREE.Vector3(0,0,gz))<7
       && Math.abs(ball.position.x)<GOAL_W/2+2
       && (p.team===0?ball.position.z<gz+6:ball.position.z>gz-6);
     if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-3,p.team===0?gz+3:HALF_L-1);}
@@ -1095,7 +1116,7 @@ function stepPlayer(p,dt){
       // cpu slide-tackles the human carrier when close
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0
          && p.pos.distanceTo(owner.pos)<2.4 && Math.random()<0.05){
-        p.slide=0.6; p.slideCd=1.8;
+        p.slide=0.6; p.slideMax=0.6; p.slideCd=1.8;
       }
     }else if(weHave && !p.gk){
       // off the ball on our team: offer a passing option in space (support run)
@@ -1118,7 +1139,8 @@ function stepPlayer(p,dt){
   let spd = p.gk?7.8:(isCtrl?(sprint?13:9.5):(p.team===1?9.7:8.8));
   if(deadTimer>0) spd=Math.min(spd,4.5);    // relaxed jog while the ball is dead
   if(p.slide>0) spd=15;
-  if((p.dive||0)>0) spd=Math.max(spd,19);   // keeper dive lunge (sharper reflexes)
+  if(p.gk && p.gkReact) spd=Math.max(spd,13.5);  // keeper springs across to cover a shot
+  if((p.dive||0)>0) spd=Math.max(spd,21);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
   if(owner===p && p.team===1) spd=Math.max(spd,10.8);  // red runs with the ball
@@ -1129,7 +1151,7 @@ function stepPlayer(p,dt){
     // ease the facing toward the movement direction (no robotic snapping)
     const th=Math.atan2(desired.x,desired.z);
     let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
-    p.heading+=dh*Math.min(1,dt*11);
+    p.heading+=dh*Math.min(1,dt*((p.dive||0)>0?22:11));   // snap to face the dive direction
     p.vel.lerp(desired.multiplyScalar(spd), Math.min(1,dt*9));   // smooth acceleration
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
@@ -1157,9 +1179,28 @@ function stepPlayer(p,dt){
   const sw=Math.sin(u.phase)*Math.min(.9,p.speed*.08);
   u.lLeg.rotation.x=sw; u.rLeg.rotation.x=-sw;
   u.lArm.rotation.x=-sw*.8; u.rArm.rotation.x=sw*.8;
-  if(p.slide>0){ m.rotation.x=-0.6; m.rotation.z=0; m.position.y=-0.2; }
-  else if((p.dive||0)>0){ const s=Math.sign(p.vel.x)||1; m.rotation.x=0; m.rotation.z=-s*1.15; m.position.y=0.55; }
-  else { m.rotation.x=0; m.rotation.z=0; m.position.y=0; }
+  if(p.slide>0){
+    // sliding tackle: recline low, lead leg stretched out to poke the ball, arms back for balance
+    const pr=THREE.MathUtils.clamp(1-p.slide/(p.slideMax||0.5),0,1);
+    const ease=Math.sin(pr*Math.PI);                 // dip into the slide and rise out of it
+    m.rotation.x=-0.45-0.3*ease; m.rotation.z=0;
+    m.position.y=-0.05-0.12*ease;
+    u.rLeg.rotation.x=-1.3; u.lLeg.rotation.x=0.5;    // front leg extended, back leg tucked
+    u.lArm.rotation.x=1.0;  u.rArm.rotation.x=0.7;
+    u.lArm.rotation.z=-0.3; u.rArm.rotation.z=0.3;
+  }
+  else if((p.dive||0)>0){
+    // keeper dive: body goes horizontal the way it springs, both arms reach for the ball, arcing through the air
+    const pr=THREE.MathUtils.clamp(1-p.dive/(p.diveMax||0.6),0,1);
+    const arc=Math.sin(pr*Math.PI);
+    m.rotation.x=-1.35; m.rotation.z=0;               // lay out head-first toward the shot
+    m.position.y=0.42+arc*0.7;                        // leave the turf and come back down
+    u.lArm.rotation.x=-2.75; u.rArm.rotation.x=-2.75; // both arms stretched overhead toward the ball
+    u.lArm.rotation.z=0.12;  u.rArm.rotation.z=-0.12;
+    u.lLeg.rotation.x=0.18;  u.rLeg.rotation.x=0.18;  // legs trail together
+  }
+  else { m.rotation.x=0; m.rotation.z=0; m.position.y=0;
+    u.lArm.rotation.z=0; u.rArm.rotation.z=0; }       // clear any slide/dive arm splay
   u.ring.visible=(p===ctrlPlayer());
 }
 
@@ -1178,7 +1219,8 @@ function playerBallInteraction(dt){
   players.forEach(p=>{
     if(!p.gk||(p.fall||0)>0) return;
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
-    if(Math.hypot(dx,dz)<2.6 && ball.position.y<3.0) owner=p;   // wider, higher reach
+    const reach=(p.dive||0)>0?3.6:2.6, maxH=(p.dive||0)>0?3.8:3.0;  // a full-stretch dive reaches further
+    if(Math.hypot(dx,dz)<reach && ball.position.y<maxH) owner=p;
   });
   // DLS-style auto-switch: hand control to whichever blue outfielder has the ball, so your
   // team only kicks when YOU press a button (the AI never passes/shoots for you)
