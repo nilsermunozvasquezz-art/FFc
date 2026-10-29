@@ -176,11 +176,17 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 const THREE = window.THREE;
 
 /* ============ constants ============ */
-const HALF_W = 25, HALF_L = 48;          // field x / z half-extents
+const HALF_W = 28, HALF_L = 52;          // field x / z half-extents (bigger pitch)
 const GOAL_W = 13, GOAL_H = 4.2, GOAL_D = 2.2;
 const BALL_R = 0.34, P_R = 0.9;
 const PLAYER_SCALE = 1.1;             // players a touch bigger
 const FOOT_LIFT = 0.05;               // lift so the shoes rest ON the grass (no sinking / levitating)
+// ball physics (shared by stepBall AND the keeper's trajectory predictor so saves stay accurate)
+const GRAV = 27;                      // gravity on the ball
+const REST = 0.52;                    // vertical bounciness
+const BOUNCE_FR = 0.86;               // horizontal pace kept through a bounce
+const GROUND_FR = 0.16;               // rolling resistance (per second factor)
+const AIR_FR = 0.88;                  // air drag (per second factor)
 const POSSESS = 2.0;                       // distance to control ball
 const MATCH_SECS = 300;
 const TEAMS = 2, PER_TEAM = 5;             // 1 GK + 4 outfield
@@ -272,15 +278,16 @@ function buildPitch(){
   line(HALF_W*2, t, 0, HALF_L); line(HALF_W*2, t, 0, -HALF_L);
   line(t, HALF_L*2, HALF_W,0);  line(t, HALF_L*2, -HALF_W,0);
   line(HALF_W*2, t, 0, 0);
-  arc(6.0,0,0,0,Math.PI*2); dot(0,0);                 // center circle + spot
+  arc(9.0,0,0,0,Math.PI*2); dot(0,0);                 // center circle + spot
   // corner arcs (quarter circles bulging into the pitch)
   const cr=1.2;
   arc(cr,-HALF_W,-HALF_L,0,Math.PI/2);
   arc(cr, HALF_W,-HALF_L,Math.PI/2,Math.PI/2);
   arc(cr, HALF_W, HALF_L,Math.PI,Math.PI/2);
   arc(cr,-HALF_W, HALF_L,Math.PI*1.5,Math.PI/2);
-  // penalty + goal areas per end
-  const BW=11, B18=8, SW6=6, B6=3, pspot=6, parc=5;
+  // penalty + goal areas per end (proportioned to the pitch)
+  const BW=17, B18=14, SW6=9, B6=5, pspot=10, parc=8;
+  const ha=Math.acos(THREE.MathUtils.clamp((B18-pspot)/parc,-1,1));  // half-angle of the visible "D"
   [-1,1].forEach(s=>{
     const gl=s*HALF_L;
     line(BW*2, t, 0, gl - s*B18);              // 18-yd front
@@ -290,7 +297,8 @@ function buildPitch(){
     line(t, B6, -SW6, gl - s*B6/2);            // 6-yd sides
     line(t, B6,  SW6, gl - s*B6/2);
     dot(0, gl - s*pspot);                      // penalty spot
-    arc(parc, 0, gl - s*pspot, s>0?Math.PI*0.25:Math.PI*1.25, Math.PI*0.5);  // penalty arc toward midfield
+    // penalty arc: only the part of the circle outside the box, facing midfield
+    arc(parc, 0, gl - s*pspot, (s>0?Math.PI/2:Math.PI*1.5)-ha, 2*ha);
   });
 }
 buildPitch();
@@ -455,10 +463,10 @@ function makeLinesman(sideSign){
   cloth.position.set(.42,1.25,0); flag.add(cloth);
   flag.position.set(.45,1.4,.1); flag.rotation.z=-1.9;              // held down by default
   m.add(flag);
-  return {mesh:m,flag,side:sideSign,z:0,flagUp:0,u:m.userData};
+  return {mesh:m,flag,side:sideSign,z:0,flagUp:0,heading:(sideSign>0?-Math.PI/2:Math.PI/2),u:m.userData};
 }
 const linesmen=[makeLinesman(1),makeLinesman(-1)];
-linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),0,0));
+linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,0));
 function stepLinesmen(dt){
   linesmen.forEach(l=>{
     // each assistant covers one half: follow the ball in your half, hold near the halfway line otherwise
@@ -467,14 +475,23 @@ function stepLinesmen(dt){
     // tracking the ball in your own half is quick; recovering to position when play is on
     // the other half is a slower jog back (each assistant owns one half of the pitch)
     const inMyHalf = l.side>0 ? ball.position.z > -1 : ball.position.z < 1;
-    const spd=Math.abs(tz-l.z);
+    const prevZ=l.z;
     l.z+=(tz-l.z)*Math.min(1,dt*(inMyHalf?2.5:0.9));
-    l.mesh.position.set(l.side*(HALF_W+1.6),0,l.z);
-    l.mesh.rotation.y=l.side>0?-Math.PI/2:Math.PI/2;                 // face the pitch
-    const u=l.u; u.phase+=dt*(3+spd*4); const sw=Math.sin(u.phase)*0.3;
+    const vz=(l.z-prevZ)/Math.max(dt,1e-4);              // running speed along the line (units/s)
+    const run=Math.abs(vz);
+    l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,l.z);
+    // turn to run facing the way they move; square up to the pitch again when they settle
+    const faceField = l.side>0?-Math.PI/2:Math.PI/2;
+    const target = run>1.3 ? (vz>0?0:Math.PI) : faceField;
+    let dh=target-l.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
+    l.heading+=dh*Math.min(1,dt*7);
+    l.mesh.rotation.set(0,l.heading,0);
+    // leg + arm swing scales with pace: a gentle walk up to a clear run
+    const u=l.u; u.phase+=dt*(4+run*1.4); const amp=Math.min(0.95, 0.1+run*0.1);
+    const sw=Math.sin(u.phase)*amp;
     u.lLeg.rotation.x=sw; u.rLeg.rotation.x=-sw;
     if(l.flagUp>0){ l.flagUp-=dt; l.flag.rotation.z=-3.05; u.rArm.rotation.x=-2.7; u.lArm.rotation.x=0; }
-    else { l.flag.rotation.z=-1.9; u.lArm.rotation.x=-sw*.6; u.rArm.rotation.x=sw*.6; }
+    else { l.flag.rotation.z=-1.9; u.lArm.rotation.x=-sw*.7; u.rArm.rotation.x=sw*.7; }
   });
 }
 
@@ -508,8 +525,8 @@ function updateLandMarker(){
     let x=ball.position.x,y=ball.position.y,z=ball.position.z;
     let vx=ballVel.x,vy=ballVel.y,vz=ballVel.z; const h=0.03;
     for(let i=0;i<240;i++){
-      vy-=26*h; x+=vx*h; y+=vy*h; z+=vz*h;
-      const fr=Math.pow(0.85,h); vx*=fr; vz*=fr;
+      vy-=GRAV*h; x+=vx*h; y+=vy*h; z+=vz*h;
+      const fr=Math.pow(AIR_FR,h); vx*=fr; vz*=fr;
       if(y<=BALL_R) break;
     }
     landMarker.position.set(x,0.04,z); landMarker.visible=true;
@@ -975,11 +992,12 @@ function predictAtGoalLine(team){
   if(!toward) return null;
   let x=ball.position.x, y=ball.position.y, z=ball.position.z;
   let vx=ballVel.x, vy=ballVel.y, vz=ballVel.z; const h=0.02; let t=0;
-  for(let i=0;i<260;i++){
-    vy-=26*h; x+=vx*h; y+=vy*h; z+=vz*h; t+=h;
-    if(y<BALL_R){ y=BALL_R; vy*=-0.48; if(Math.abs(vy)<1.3)vy=0;
-      const fr=Math.pow(0.12,h); vx*=fr; vz*=fr; }
-    else { const fr=Math.pow(0.85,h); vx*=fr; vz*=fr; }
+  for(let i=0;i<300;i++){
+    vy-=GRAV*h; x+=vx*h; y+=vy*h; z+=vz*h; t+=h;
+    if(y<BALL_R){ y=BALL_R; const landing=Math.abs(vy)>1.3; vy*=-REST;
+      if(!landing||Math.abs(vy)<1.0)vy=0; if(landing){ vx*=BOUNCE_FR; vz*=BOUNCE_FR; }
+      const fr=Math.pow(GROUND_FR,h); vx*=fr; vz*=fr; }
+    else { const fr=Math.pow(AIR_FR,h); vx*=fr; vz*=fr; }
     if((team===0 && z<=goalLineZ) || (team===1 && z>=goalLineZ)) return {x,y,t};
   }
   return null;
@@ -1043,19 +1061,18 @@ function stepPlayer(p,dt){
     p.gkReact=false;
     const pred=predictAtGoalLine(p.team);
     const bspd=Math.hypot(ballVel.x,ballVel.z);
-    const shot = pred && Math.abs(pred.x)<GOAL_W/2+4 && pred.y<GOAL_H+1.2
-      && bspd>6 && !(owner&&owner.team===p.team);
+    const shot = pred && Math.abs(pred.x)<GOAL_W/2+4 && pred.y<GOAL_H+1.0
+      && bspd>5 && !(owner&&owner.team===p.team);
     if(shot){
       p.gkReact=true;
       tx=THREE.MathUtils.clamp(pred.x,-GOAL_W/2-3,GOAL_W/2+3);
-      // a high, dropping ball -> come off the line to claim it before it sails in;
-      // a low drive -> hug the line and get across
+      // high, dropping ball -> come off the line to claim it; low/ras drive -> hug the line and get across
       const highBall = pred.y>2.2;
-      const out = highBall ? Math.min(5, pred.t*2.4) : Math.min(1.4, pred.t*0.6);
+      const out = highBall ? Math.min(5.5, pred.t*2.6) : Math.min(1.4, pred.t*0.6);
       tz = gz + (p.team===0?out:-out);
-      // time the dive so the keeper is still at full stretch WHEN the ball arrives
-      if(pred.t<0.72 && Math.abs(pred.x-p.pos.x)>0.65 && (p.dive||0)<=0){
-        p.diveMax=Math.max(0.55, pred.t+0.22); p.dive=p.diveMax;
+      // dive timed to be at full stretch WHEN the ball arrives — covers low, intermediate and high shots
+      if(pred.t<0.82 && Math.abs(pred.x-p.pos.x)>0.55 && (p.dive||0)<=0){
+        p.diveMax=Math.max(0.5, pred.t+0.24); p.dive=p.diveMax;
       }
     }
     // rush out for a loose ball very close to goal (don't abandon the line otherwise)
@@ -1150,8 +1167,8 @@ function stepPlayer(p,dt){
   let spd = p.gk?7.8:(isCtrl?(sprint?13:9.5):(p.team===1?9.7:8.8));
   if(deadTimer>0) spd=Math.min(spd,4.5);    // relaxed jog while the ball is dead
   if(p.slide>0) spd=15;
-  if(p.gk && p.gkReact) spd=Math.max(spd,13.5);  // keeper springs across to cover a shot
-  if((p.dive||0)>0) spd=Math.max(spd,21);   // keeper dive lunge (sharper reflexes)
+  if(p.gk && p.gkReact) spd=Math.max(spd,15.5);  // keeper springs across to cover a shot
+  if((p.dive||0)>0) spd=Math.max(spd,23);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
   if(owner===p && p.team===1) spd=Math.max(spd,10.8);  // red runs with the ball
@@ -1339,14 +1356,17 @@ function offsideCall(attackTeam, pos){
 
 function stepBall(dt){
   // gravity / integrate
-  ballVel.y-=26*dt;
+  ballVel.y-=GRAV*dt;
   ball.position.addScaledVector(ballVel,dt);
   if(ball.position.y<BALL_R){
-    ball.position.y=BALL_R; ballVel.y*=-0.48;                   // livelier bounce
-    if(Math.abs(ballVel.y)<1.3)ballVel.y=0;
-    const fr=Math.pow(0.12,dt); ballVel.x*=fr; ballVel.z*=fr;   // ground friction
+    ball.position.y=BALL_R;
+    const landing=Math.abs(ballVel.y)>1.3;
+    ballVel.y*=-REST;                                          // bounce
+    if(!landing || Math.abs(ballVel.y)<1.0)ballVel.y=0;
+    if(landing){ ballVel.x*=BOUNCE_FR; ballVel.z*=BOUNCE_FR; } // a bounce scrubs some pace off
+    const fr=Math.pow(GROUND_FR,dt); ballVel.x*=fr; ballVel.z*=fr;   // rolling resistance
   }else{
-    const fr=Math.pow(0.85,dt); ballVel.x*=fr; ballVel.z*=fr;   // air drag
+    const fr=Math.pow(AIR_FR,dt); ballVel.x*=fr; ballVel.z*=fr;      // air drag
   }
   // sideline out of play -> throw-in (let it roll out, then restart)
   if(Math.abs(ball.position.x)>HALF_W && Math.abs(ball.position.z)<HALF_L
@@ -1369,7 +1389,8 @@ function stepBall(dt){
   bShadow.position.set(ball.position.x,0.03,ball.position.z);
   const sc=THREE.MathUtils.clamp(1.3-ball.position.y*0.12,0.5,1.3);
   bShadow.scale.set(sc,sc,sc);
-  ball.rotation.x+=ballVel.z*dt*0.5; ball.rotation.z-=ballVel.x*dt*0.5;
+  // roll the ball at its true rate (angular speed = v / radius) so the spin matches the travel
+  ball.rotation.x += (ballVel.z/BALL_R)*dt; ball.rotation.z -= (ballVel.x/BALL_R)*dt;
 }
 
 function doGoal(team){
@@ -1417,7 +1438,7 @@ function stepReferee(dt){
   const desiredV=toWant.clone().clampLength(0,maxSpd);
   refVel.lerp(desiredV, Math.min(1,dt*2.5));
   refPos.addScaledVector(refVel,dt);
-  ref.position.set(refPos.x,0,refPos.z);
+  ref.position.set(refPos.x,FOOT_LIFT,refPos.z);
   const faceAt=(booking?foulSpot:ball.position).clone().sub(refPos); faceAt.y=0;
   if(faceAt.lengthSq()>0.02) ref.rotation.y=Math.atan2(faceAt.x,faceAt.z);
   const u=ref.userData; const spd=refVel.length();
@@ -1434,7 +1455,7 @@ const camState={x:HALF_W+30,y:23,z:0};
 function stepCamera(dt){
   const z=(typeof camZoom==='number')?camZoom:1;
   const tx=HALF_W + 30*z - ball.position.x*0.14;
-  const tz=THREE.MathUtils.clamp(ball.position.z*0.7,-18,18);
+  const tz=THREE.MathUtils.clamp(ball.position.z*0.7,-22,22);
   const ty=23*z;
   camState.x+=(tx-camState.x)*Math.min(1,dt*1.8);
   camState.z+=(tz-camState.z)*Math.min(1,dt*2.2);
