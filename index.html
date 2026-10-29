@@ -893,9 +893,7 @@ function doAction(which, power){
   // Aim with the joystick (like your normal passes), else it goes to the nearest mate back/square.
   if(awaitKickoffPass && kickoffTaker && p===kickoffTaker){
     owner=kickoffTaker;                      // make sure we have the ball even if it drifted
-    let tgt=null;
-    if(moveDir.lengthSq()>0.05){ const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize(); tgt=directionalPassTarget(kickoffTaker,jd); }
-    if(!tgt) tgt=kickoffPassTarget(kickoffTaker);
+    const tgt=kickoffPassTarget(kickoffTaker);   // the kickoff is always a short ball BACK/square to a mate
     if(tgt){ passBall(kickoffTaker,tgt,0.65); ctrl=players.indexOf(tgt); }
     awaitKickoffPass=false; kickoffTaker=null;
     return;
@@ -1231,13 +1229,13 @@ function stepPlayer(p,dt){
     desired.copy(p.base).sub(p.pos).setY(0);
     if(desired.lengthSq()<0.04) desired.set(0,0,0);
   }else if(awaitKickoffPass && p===kickoffTaker){
-    // the kickoff taker is frozen on the centre spot until the ball is played (you can only pass)
+    // kickoff: the taker holds the ball at their feet for a beat, then ALWAYS rolls it back/square to a
+    // teammate to start the game — automatic for BOTH teams, so it never gets stuck going forward alone.
     p.koWait=(p.koWait||0)+dt;
-    // CPU takes it quickly; YOUR kickoff waits for your button, with a safety auto-take so it never gets stuck
-    if(p.team===1 ? p.koWait>0.45 : p.koWait>3.5){
-      const tgt=kickoffPassTarget(p);
-      if(tgt) passBall(p,tgt,0.7);
-      awaitKickoffPass=false; kickoffTaker=null;        // release either way
+    if(p.koWait>0.7){
+      const tgt=kickoffPassTarget(p);                   // nearest mate behind/beside — never a ball forward
+      if(tgt){ passBall(p,tgt,0.7); if(p.team===0) ctrl=players.indexOf(tgt); }  // you take over the receiver
+      awaitKickoffPass=false; kickoffTaker=null;
     }
     desired.set(0,0,0); p.vel.set(0,0,0);
   }else if(awaitKickoffPass && !isCtrl){
@@ -1286,6 +1284,10 @@ function stepPlayer(p,dt){
       // dive timed to be at full stretch WHEN the ball arrives — covers low, intermediate and high shots
       if(pred.t<0.9 && Math.abs(pred.x-p.pos.x)>0.45 && (p.dive||0)<=0){
         p.diveMax=Math.max(0.5, pred.t+0.26); p.dive=p.diveMax;
+        // remember which way the keeper springs so the ball meets his HANDS, not his feet
+        p.diveDir=new THREE.Vector3(pred.x-p.pos.x,0,(tz-p.pos.z)*0.3);
+        if(p.diveDir.lengthSq()<0.01) p.diveDir.set(0,0,p.team===0?1:-1);
+        p.diveDir.normalize();
       }
     }
     // sweeper-keeper: now and then rush OUT to cut a counter — a loose ball or a rival carrier
@@ -1576,6 +1578,18 @@ function playerBallInteraction(dt){
   teamHasBall = !!(owner && owner.team===0);
   if(owner) lastTouch=owner.team;              // remember who touched it last (for throw-ins)
 
+  // keeper has the ball: hold it UP in his hands (not on the grass), reaching the way he dived —
+  // so a save looks like a catch with the hands, then he gets up and holds it at his chest
+  if(owner && owner.gk){
+    const diving=(owner.dive||0)>0;
+    const dir = diving ? (owner.diveDir||new THREE.Vector3(0,0,owner.team===0?1:-1))
+                       : new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
+    const reach = diving ? 1.35 : 0.7;
+    const hy = diving ? 1.25 : 1.3;                 // ball height at the hands
+    const want=owner.pos.clone().addScaledVector(dir,reach); want.y=hy;
+    ball.position.lerp(want,Math.min(1,dt*20)); ballVel.set(0,0,0);
+    return;
+  }
   // dribble: carry the ball in close control just in front of the owner's feet
   if(owner && ball.position.y<0.9 && ballVel.length()<17){
     const fwd=new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
@@ -1650,6 +1664,8 @@ function offsideCall(attackTeam, pos){
 }
 
 function stepBall(dt){
+  // the keeper is holding the ball in his hands — playerBallInteraction pins it there, so no gravity
+  if(owner && owner.gk) return;
   // gravity / integrate
   ballVel.y-=GRAV*dt;
   ball.position.addScaledVector(ballVel,dt);
