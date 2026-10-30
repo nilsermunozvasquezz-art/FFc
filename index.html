@@ -950,7 +950,7 @@ function doAction(which, power){
         const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
         dir=jd.multiplyScalar(0.8).add(toGoal.multiplyScalar(0.3)).normalize();   // you aim; a slight goal pull keeps it honest
       }else dir=toGoal;                      // no aim -> straight at goal (not random)
-      ballVel.copy(dir).multiplyScalar(18+24*power); ballVel.y=2.5+2.5*power;
+      ballVel.copy(dir).multiplyScalar(20+26*power); ballVel.y=2.5+2.5*power;
       showPower(pl, power);
     }else{                      // ELEVADO (lob/cross) — toward where the joystick points
       const dir=aimDir(pl);
@@ -985,7 +985,7 @@ function cpuTryKick(p){
     if(dir.lengthSq()<1) dir.set(0,0,-1);        // on the goal line the aim degenerates to zero -> never launch straight up
     dir.normalize();
     const pw=0.85+Math.random()*0.15;
-    ballVel.copy(dir).multiplyScalar(30+12*pw); ballVel.y=2.5+2.0*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
+    ballVel.copy(dir).multiplyScalar(32+13*pw); ballVel.y=2.5+2.0*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
   }
   // near the box: lay it off to the best-placed open mate, or keep driving at goal yourself
   const best=bestPassTarget(p);
@@ -1023,11 +1023,11 @@ function passBall(p,target,power){
     scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
-  const ps=0.75+0.45*power;                // power multiplier on strike strength
+  const ps=0.8+0.5*power;                  // power multiplier on strike strength (passes hit a bit firmer now)
   // lead a moving receiver so the ball arrives at their FEET: estimate the ground speed first, then
   // lead by the actual flight time (dist / speed), so the pass is weighted right instead of over-hit
   const rough=ball.position.distanceTo(target.pos);
-  const estSp=THREE.MathUtils.clamp(rough*2.1, 16, 50)*ps;
+  const estSp=THREE.MathUtils.clamp(rough*2.25, 18, 55)*ps;
   const flight=THREE.MathUtils.clamp(rough/Math.max(estSp,1), 0.08, 0.6);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(flight):new THREE.Vector3();
   const aim=target.pos.clone().add(lead); aim.y=0;
@@ -1050,12 +1050,12 @@ function passBall(p,target,power){
     const T=THREE.MathUtils.clamp(dist/28,0.55,0.95);
     ballVel.copy(v).multiplyScalar(dist/T*1.1*ps); ballVel.y=GRAV*T/2*0.85;
   }else{                                   // crisp ground pass, weighted to land right on the receiver
-    const sp=THREE.MathUtils.clamp(dist*2.1, 16, 50)*ps;
-    ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.22;
+    const sp=THREE.MathUtils.clamp(dist*2.25, 18, 55)*ps;
+    ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.2;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
-  // the intended receiver moves to meet the ball for a moment, so the pass actually connects
-  if(target && target.team===p.team && !target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(dist/16,0.4,1.4); }
+  // the intended receiver moves to meet the ball, so the pass actually connects (longer for longer passes)
+  if(target && target.team===p.team && !target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(dist/13,0.6,1.8); }
   if(throwTimer>0) throwTimer=0;                            // a throw-in was taken
   showPower(p, power);                                     // pass/throw power bar
 }
@@ -1299,6 +1299,10 @@ function stepPlayer(p,dt){
     keyDir();
     // side camera: screen-right = world -Z, screen-up = world -X
     desired.set(moveDir.y, 0, -moveDir.x);
+    // a pass is coming to you and you're not steering -> drift to meet the ball so it connects
+    if(passReceiver===p && passSeekT>0 && owner!==p && desired.lengthSq()<0.05){
+      desired.copy(ball.position).sub(p.pos).setY(0);
+    }
     // PRESIONAR: if you're not steering, charge the rival carrier (or the ball) to dispossess
     if(pressTimer>0 && desired.lengthSq()<0.05){
       const tgt=(owner&&owner.team!==p.team)?owner.pos:ball.position;
