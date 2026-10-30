@@ -176,12 +176,12 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 const THREE = window.THREE;
 
 /* ============ constants ============ */
-const HALF_W = 31, HALF_L = 58;          // field x / z half-extents (bigger pitch)
-const GOAL_W = 14, GOAL_H = 4.4, GOAL_D = 2.2;
+const HALF_W = 36, HALF_L = 68;          // field x / z half-extents (bigger pitch)
+const GOAL_W = 15, GOAL_H = 4.4, GOAL_D = 2.2;
 const BALL_R = 0.34, P_R = 1.0;
 const PLAYER_SCALE = 1.24;            // players a bit bigger
 const FOOT_LIFT = 0.05;               // lift so the shoes rest ON the grass (no sinking / levitating)
-const BOX_HALF_W = 17, BOX_DEPTH = 14;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
+const BOX_HALF_W = 20, BOX_DEPTH = 16;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
 function inOwnBox(p){ const gl=p.team===0?-HALF_L:HALF_L; return Math.abs(p.pos.x)<BOX_HALF_W && Math.abs(p.pos.z-gl)<BOX_DEPTH; }
 // ball physics (shared by stepBall AND the keeper's trajectory predictor so saves stay accurate)
 const GRAV = 27;                      // gravity on the ball
@@ -280,7 +280,7 @@ function buildPitch(){
   line(HALF_W*2, t, 0, HALF_L); line(HALF_W*2, t, 0, -HALF_L);
   line(t, HALF_L*2, HALF_W,0);  line(t, HALF_L*2, -HALF_W,0);
   line(HALF_W*2, t, 0, 0);
-  arc(9.0,0,0,0,Math.PI*2); dot(0,0);                 // center circle + spot
+  arc(10.5,0,0,0,Math.PI*2); dot(0,0);                // center circle + spot
   // corner arcs (quarter circles bulging into the pitch)
   const cr=1.2;
   arc(cr,-HALF_W,-HALF_L,0,Math.PI/2);
@@ -288,7 +288,7 @@ function buildPitch(){
   arc(cr, HALF_W, HALF_L,Math.PI,Math.PI/2);
   arc(cr,-HALF_W, HALF_L,Math.PI*1.5,Math.PI/2);
   // penalty + goal areas per end (proportioned to the pitch)
-  const BW=17, B18=14, SW6=9, B6=5, pspot=10, parc=8;
+  const BW=20, B18=16, SW6=11, B6=6, pspot=12, parc=9;
   const ha=Math.acos(THREE.MathUtils.clamp((B18-pspot)/parc,-1,1));  // half-angle of the visible "D"
   [-1,1].forEach(s=>{
     const gl=s*HALF_L;
@@ -484,14 +484,14 @@ function assignRoles(){
 /* formations — one player per position, spread out (blue attacks +Z; red attacks -Z):
    0 GK · 1 left-def · 2 right-def · 3 left-wing · 4 right-wing · 5 striker */
 const FORM=[
-  [[0,-HALF_L+2],[-11,-20],[11,-20],[-18,5],[18,5],[0,17]],    // blue
-  [[0, HALF_L-2],[ 11, 20],[-11, 20],[ 18,-5],[-18,-5],[0,-17]] // red mirrored
+  [[0,-HALF_L+2],[-13,-23],[13,-23],[-21,6],[21,6],[0,20]],    // blue
+  [[0, HALF_L-2],[ 13, 23],[-13, 23],[ 21,-6],[-21,-6],[0,-20]] // red mirrored
 ];
 const STRIKER=PER_TEAM-1;                              // last index = striker (5)
 // kickoff layout: every player inside their OWN half, well spaced (blue z<0, red z>0)
 const KICK=[
-  [[0,-HALF_L+2],[-11,-22],[11,-22],[-18,-11],[18,-11],[0,-2]], // blue
-  [[0, HALF_L-2],[ 11, 22],[-11, 22],[ 18, 11],[-18, 11],[0, 2]] // red
+  [[0,-HALF_L+2],[-13,-26],[13,-26],[-21,-13],[21,-13],[0,-2]], // blue
+  [[0, HALF_L-2],[ 13, 26],[-13, 26],[ 21, 13],[-21, 13],[0, 2]] // red
 ];
 function resetPositions(kickTeam){
   assignRoles();
@@ -1524,15 +1524,15 @@ function stepPlayer(p,dt){
   }
 
   // speed
-  let spd = p.gk?7.8:(isCtrl?(sprint?13:9.5):(p.team===1?9.7:8.8));
-  if(deadTimer>0) spd=Math.min(spd,4.5);    // relaxed jog while the ball is dead
-  if(p.slide>0) spd=15;
-  if(p.gk && p.gkReact) spd=Math.max(spd,17);    // keeper springs across to cover a shot / sweep
-  if((p.dive||0)>0) spd=Math.max(spd,24);   // keeper dive lunge (sharper reflexes)
-  if(isCtrl && pressTimer>0) spd=Math.max(spd,15);     // press charge
+  let spd = p.gk?8.6:(isCtrl?(sprint?14.6:10.7):(p.team===1?10.9:9.9));
+  if(deadTimer>0) spd=Math.min(spd,5);      // relaxed jog while the ball is dead
+  if(p.slide>0) spd=16.5;
+  if(p.gk && p.gkReact) spd=Math.max(spd,19);    // keeper springs across to cover a shot / sweep
+  if((p.dive||0)>0) spd=Math.max(spd,26);   // keeper dive lunge (sharper reflexes)
+  if(isCtrl && pressTimer>0) spd=Math.max(spd,16.5);   // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
-  if(owner===p && p.team===1) spd=Math.max(spd,11.3);  // red runs with the ball
-  if(redDefend) spd=Math.max(spd,11.4);                // red hustles to win it back
+  if(owner===p && p.team===1) spd=Math.max(spd,12.7);  // red runs with the ball
+  if(redDefend) spd=Math.max(spd,12.8);                // red hustles to win it back
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   if(desired.lengthSq()>0.001){
     desired.normalize();
@@ -1556,7 +1556,7 @@ function stepPlayer(p,dt){
     else           p.pos.z=Math.max(p.pos.z, 1.2);
     if(p.team!==kickoffTeam){
       const d=Math.hypot(p.pos.x,p.pos.z);
-      if(d<9.5 && d>0.01){ const s=9.5/d; p.pos.x*=s; p.pos.z*=s; }   // defenders out of the circle
+      if(d<11 && d>0.01){ const s=11/d; p.pos.x*=s; p.pos.z*=s; }     // defenders out of the circle
       if(p.team===0) p.pos.z=Math.min(p.pos.z,-1.2); else p.pos.z=Math.max(p.pos.z, 1.2);
     }
   }
