@@ -659,13 +659,14 @@ let owner=null;                   // player object holding ball, or null
 let teamHasBall=false;            // true if blue owns
 let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
 let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='', setPieceTaker=null, setPieceGK=false;   // set-piece state
+let setPieceForm=0;               // a few seconds for both teams to get into position before the restart can be taken
 let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then the restart is set up
 let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pass; foes held in their half until then
 let koGrace=0;                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
 let passReceiver=null, passSeekT=0;   // the mate a pass is heading to moves to meet it, so passes connect
 function scheduleRestart(delay, label, fn){
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
-  throwTimer=0;                              // a new whistle supersedes any pending set-piece
+  throwTimer=0; setPieceForm=0;              // a new whistle supersedes any pending set-piece
   deadTimer=delay; deadAction=fn; owner=null; setPieceLabel=label;
 }
 
@@ -678,7 +679,7 @@ function kickoff(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=1.2; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;
+  ctrl=1; owner=null; kickoffHold=1.2; throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null;
   awaitKickoffPass=false; kickoffTaker=null;      // settle in formation, then a proper kickoff pass
 }
 // post-goal restart: line both teams up, then kick off after a short pause
@@ -686,7 +687,7 @@ function kickoffRestart(team){
   kickoffTeam=team;
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
-  ctrl=1; owner=null; kickoffHold=1.3; throwTimer=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // brief line-up, then play
+  ctrl=1; owner=null; kickoffHold=1.3; throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // brief line-up, then play
   awaitKickoffPass=false; kickoffTaker=null;
 }
 // hand the kickoff to the kicking team's striker; play only resumes once they pass to a mate
@@ -910,6 +911,7 @@ function doAction(which, power){
   // any set-piece (throw-in / free kick / offside) you take: you MUST pass to a teammate to restart —
   // you can't shoot or play it out yourself. Aim with the joystick, or it finds the best open teammate.
   if(throwTimer>0 && setPieceTaker && p===setPieceTaker){
+    if(setPieceForm>0){ owner=setPieceTaker; return; }   // wait: teammates are still getting into position
     owner=setPieceTaker;
     let tgt=null;
     if(moveDir.lengthSq()>0.05){ const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize(); tgt=directionalPassTarget(setPieceTaker,jd); }
@@ -1023,11 +1025,11 @@ function passBall(p,target,power){
     scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
-  const ps=0.8+0.5*power;                  // power multiplier on strike strength (passes hit a bit firmer now)
+  const ps=0.85+0.5*power;                 // power multiplier on strike strength (passes hit firmer now)
   // lead a moving receiver so the ball arrives at their FEET: estimate the ground speed first, then
   // lead by the actual flight time (dist / speed), so the pass is weighted right instead of over-hit
   const rough=ball.position.distanceTo(target.pos);
-  const estSp=THREE.MathUtils.clamp(rough*2.25, 18, 55)*ps;
+  const estSp=THREE.MathUtils.clamp(rough*2.4, 20, 58)*ps;
   const flight=THREE.MathUtils.clamp(rough/Math.max(estSp,1), 0.08, 0.6);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(flight):new THREE.Vector3();
   const aim=target.pos.clone().add(lead); aim.y=0;
@@ -1050,7 +1052,7 @@ function passBall(p,target,power){
     const T=THREE.MathUtils.clamp(dist/28,0.55,0.95);
     ballVel.copy(v).multiplyScalar(dist/T*1.1*ps); ballVel.y=GRAV*T/2*0.85;
   }else{                                   // crisp ground pass, weighted to land right on the receiver
-    const sp=THREE.MathUtils.clamp(dist*2.25, 18, 55)*ps;
+    const sp=THREE.MathUtils.clamp(dist*2.4, 20, 58)*ps;
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.2;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
@@ -1284,8 +1286,9 @@ function stepPlayer(p,dt){
     desired.copy(p.base).sub(p.pos).setY(0);
     if(desired.lengthSq()<0.09) desired.set(0,0,0);
   }else if(throwTimer>0 && p===setPieceTaker && owner===p){
-    // the set-piece taker can't roam and MUST pass to a teammate to restart (no playing it out alone)
-    if(p.team===1 && !setPieceGK && (p.holdT||0)>0.7){     // CPU plays its set-piece with a pass after a short pause
+    // the set-piece taker can't roam and MUST pass to a teammate to restart (no playing it out alone).
+    // Nobody takes it until the form-up phase is over, so teammates have time to get into position.
+    if(setPieceForm<=0 && p.team===1 && !setPieceGK && (p.holdT||0)>0.4){   // CPU plays once everyone's set
       const tgt=passTarget(p) || kickoffPassTarget(p);
       if(tgt){ passBall(p,tgt); setPieceTaker=null; }
     }
@@ -1413,10 +1416,10 @@ function stepPlayer(p,dt){
       const isTaker=(p.team===throwTeam);
       let adv;
       if(isTaker){
-        adv = setPieceLabel==='SAQUE DE BANDA' ? 7       // throw-in: edge up the pitch
-            : setPieceLabel==='TIRO LIBRE'     ? 9       // free kick for us: push up to attack it
-            : setPieceLabel==='SAQUE DE META'  ? 3       // goal kick: spread to receive
-            : 2;                                         // offside restart: just play it out
+        adv = setPieceLabel==='SAQUE DE BANDA' ? 10      // throw-in: push up the pitch to support
+            : setPieceLabel==='TIRO LIBRE'     ? 12      // free kick for us: push up to attack it
+            : setPieceLabel==='SAQUE DE META'  ? 4       // goal kick: spread to receive
+            : 3;                                         // offside restart: just play it out
       }else{
         adv = setPieceLabel==='SAQUE DE BANDA' ? -4      // defending a throw-in: hold a touch deeper
             : setPieceLabel==='SAQUE DE META'  ? -2
@@ -1672,7 +1675,8 @@ function playerBallInteraction(dt){
 
 // generic set-piece: give the ball to `team` at (x,z), push opponents back, open a protected window
 function awardSetPiece(team, x, z, label, taker){
-  throwTeam=team; throwTimer=2.2; setPieceLabel=label;
+  // formation phase first (teams get into position), then a window to take it
+  throwTeam=team; setPieceForm=2.4; throwTimer=2.4+2.4; setPieceLabel=label;
   x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4);
   let rec=taker||null;
   if(!rec){ let rd=1e9; const spot=new THREE.Vector3(x,0,z);
@@ -1878,12 +1882,12 @@ function drawMini(){
 const poss=document.getElementById('poss');
 const lA=document.getElementById('lA'),lB=document.getElementById('lB'),lC=document.getElementById('lC');
 const bA=document.getElementById('bA'),bB=document.getElementById('bB'),bC=document.getElementById('bC');
-let lastMode=null, lastThrow=false, lastDead=false;
+let lastMode=null, lastThrow=false, lastDead=false, lastForm=false;
 function updateButtons(){
-  const thr = throwTimer>0, dead = deadTimer>0;
+  const thr = throwTimer>0, dead = deadTimer>0, forming = setPieceForm>0;
   const mode = teamHasBall?'atk':'def';
-  if(mode===lastMode && thr===lastThrow && dead===lastDead) return;
-  lastMode=mode; lastThrow=thr; lastDead=dead;
+  if(mode===lastMode && thr===lastThrow && dead===lastDead && forming===lastForm) return;
+  lastMode=mode; lastThrow=thr; lastDead=dead; lastForm=forming;
   if(mode==='atk'){
     lA.textContent='DISPARO'; lB.textContent='PASE'; lC.textContent='ELEVADO';
     poss.textContent='⚽ ATACANDO'; poss.style.color='#7fd3ff';
@@ -1892,7 +1896,9 @@ function updateButtons(){
     poss.textContent='🛡 DEFENDIENDO'; poss.style.color='#ffce6a';
   }
   if(deadTimer>0){ poss.textContent='📣 '+setPieceLabel; poss.style.color='#ffd24a'; }
-  else if(thr){ poss.textContent=(setPieceLabel==='FUERA DE JUEGO'?'🚩 ':'🫳 ')+setPieceLabel+' (PASE)'; poss.style.color='#9fe9ff'; }
+  else if(thr){
+    const tail = forming ? ' (COLOCÁNDOSE…)' : (throwTeam===0?' (PASE)':'');
+    poss.textContent=(setPieceLabel==='FUERA DE JUEGO'?'🚩 ':'🫳 ')+setPieceLabel+tail; poss.style.color='#9fe9ff'; }
 }
 
 /* ============ loop ============ */
@@ -1927,6 +1933,7 @@ function loop(now){
       if(pressTimer>0)pressTimer-=dt;
       if(throwTimer>0){
         throwTimer-=dt;
+        if(setPieceForm>0) setPieceForm-=dt;          // count down the form-up phase before it can be taken
         // during the window you take yours with PASE; if nobody takes it, auto-resume so play never stalls
         if(throwTimer<=0){
           const o=owner;
