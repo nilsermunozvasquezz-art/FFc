@@ -1025,13 +1025,10 @@ function passBall(p,target,power){
     scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
-  const ps=0.85+0.5*power;                 // power multiplier on strike strength (passes hit firmer now)
-  // lead a moving receiver so the ball arrives at their FEET: estimate the ground speed first, then
-  // lead by the actual flight time (dist / speed), so the pass is weighted right instead of over-hit
+  const ps=0.72+0.3*power;                 // power multiplier on strike strength
+  // lead a moving receiver only MODESTLY — the ball slows as it rolls, so a big lead/hard pass overshoots
   const rough=ball.position.distanceTo(target.pos);
-  const estSp=THREE.MathUtils.clamp(rough*2.4, 20, 58)*ps;
-  const flight=THREE.MathUtils.clamp(rough/Math.max(estSp,1), 0.08, 0.6);
-  const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(flight):new THREE.Vector3();
+  const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(rough*0.04,0.1,0.4)):new THREE.Vector3();
   const aim=target.pos.clone().add(lead); aim.y=0;
   const v=aim.clone().sub(ball.position).setY(0); const dist=v.length();
   if(dist<1) return; v.normalize();
@@ -1052,7 +1049,8 @@ function passBall(p,target,power){
     const T=THREE.MathUtils.clamp(dist/28,0.55,0.95);
     ballVel.copy(v).multiplyScalar(dist/T*1.1*ps); ballVel.y=GRAV*T/2*0.85;
   }else{                                   // crisp ground pass, weighted to land right on the receiver
-    const sp=THREE.MathUtils.clamp(dist*2.4, 20, 58)*ps;
+    // weighted so the ball rolls TO the receiver and dies there (~dist) instead of running past them
+    const sp=THREE.MathUtils.clamp(dist*1.9, 9, 44)*ps;
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.2;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
@@ -1116,6 +1114,7 @@ function aiTryPass(p){
 /* Slide tackles: a sliding player that reaches an opponent knocks them down,
    and steals the ball if that opponent had it (or it's loose nearby). */
 function resolveTackles(){
+  if(throwTimer>0||awaitKickoffPass||kickoffHold>0||deadTimer>0||koGrace>0) return;  // no tackling during any restart
   players.forEach(s=>{
     if(s.slide<=0 || (s.fall||0)>0 || s.sentOff) return;
     players.forEach(o=>{
@@ -1155,7 +1154,7 @@ function resolveTackles(){
 
 /* PRESIONAR steal: while pressing, a blue player reaching the rival carrier wins the ball */
 function pressSteal(){
-  if(awaitKickoffPass || koGrace>0) return;     // no stealing during a kickoff or its settling grace
+  if(awaitKickoffPass||koGrace>0||throwTimer>0||kickoffHold>0||deadTimer>0) return;   // no stealing during any restart
   if(pressTimer<=0 || !(owner && owner.team===1)) return;
   const carrier=owner;
   for(const p of players){
@@ -1174,7 +1173,7 @@ function pressSteal(){
 
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
 function cpuSteal(){
-  if(awaitKickoffPass || koGrace>0) return;     // no stealing during a kickoff or its settling grace
+  if(awaitKickoffPass||koGrace>0||throwTimer>0||kickoffHold>0||deadTimer>0) return;   // no stealing during any restart
   if(!(owner && owner.team===0)) return;
   const carrier=owner;
   for(const p of players){
@@ -1622,18 +1621,26 @@ function separatePlayers(){
 
 function playerBallInteraction(dt){
   if(deadTimer>0){ owner=null; teamHasBall=false; return; }   // dead ball: no one controls it
-  // find nearest player to ball — but a player who JUST kicked can't instantly re-own it (the pass gets away)
-  let near=null,nd=1e9;
-  players.forEach(p=>{if(p.sentOff||(p.kickCd||0)>0.6)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
-  // slide steal / possession
-  if(near && nd<POSSESS){
-    owner=near;
-  }else if(nd>POSSESS+1.2){
-    owner=null;
+  // while a set-piece or kickoff is being HELD (not yet taken), the taker keeps the ball on their
+  // feet and NOBODY can snatch it — no nearest-grab, no keeper poach, no steal
+  const spHold = (throwTimer>0 && setPieceTaker) ? setPieceTaker
+               : (awaitKickoffPass && kickoffTaker) ? kickoffTaker : null;
+  if(spHold){
+    owner=spHold; teamHasBall=!!(owner.team===0); lastTouch=owner.team;
+  }else{
+    // find nearest player to ball — but a player who JUST kicked can't instantly re-own it (the pass gets away)
+    let near=null,nd=1e9;
+    players.forEach(p=>{if(p.sentOff||(p.kickCd||0)>0.6)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
+    // slide steal / possession
+    if(near && nd<POSSESS){
+      owner=near;
+    }else if(nd>POSSESS+1.2){
+      owner=null;
+    }
   }
   // keeper catch: grab when horizontally close and ball not too high (works mid-dive).
   // a keeper who JUST distributed can't instantly re-grab his own throw (that was the stuck bug)
-  players.forEach(p=>{
+  if(!spHold) players.forEach(p=>{
     if(!p.gk||(p.fall||0)>0||(p.kickCd||0)>0.35) return;
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
     let reach=2.7, maxH=3.0;
@@ -1676,6 +1683,7 @@ function playerBallInteraction(dt){
 // generic set-piece: give the ball to `team` at (x,z), push opponents back, open a protected window
 function awardSetPiece(team, x, z, label, taker){
   // formation phase first (teams get into position), then a window to take it
+  players.forEach(q=>{ q.slide=0; });        // cancel any slide in progress so nobody dives into the taker
   throwTeam=team; setPieceForm=2.4; throwTimer=2.4+2.4; setPieceLabel=label;
   x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4);
   let rec=taker||null;
