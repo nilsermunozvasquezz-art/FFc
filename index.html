@@ -181,6 +181,8 @@ const GOAL_W = 14, GOAL_H = 4.4, GOAL_D = 2.2;
 const BALL_R = 0.34, P_R = 1.0;
 const PLAYER_SCALE = 1.24;            // players a bit bigger
 const FOOT_LIFT = 0.05;               // lift so the shoes rest ON the grass (no sinking / levitating)
+const BOX_HALF_W = 17, BOX_DEPTH = 14;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
+function inOwnBox(p){ const gl=p.team===0?-HALF_L:HALF_L; return Math.abs(p.pos.x)<BOX_HALF_W && Math.abs(p.pos.z-gl)<BOX_DEPTH; }
 // ball physics (shared by stepBall AND the keeper's trajectory predictor so saves stay accurate)
 const GRAV = 27;                      // gravity on the ball
 const REST = 0.52;                    // vertical bounciness
@@ -872,8 +874,8 @@ function directionalPassTarget(pl, jd){
   players.forEach(q=>{ if(q.team!==pl.team||q===pl||q.sentOff) return;
     if(isOffside(q,pl.team)) return;                         // don't aim a pass into an offside mate
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1.5) return; to.normalize();
-    const align=to.dot(jd); if(align<0.45) return;          // only mates roughly in the aimed direction
-    const sc=align*6 - dist*0.07;
+    const align=to.dot(jd); if(align<0.55) return;          // only mates close to where you're pointing
+    const sc=align*12 - dist*0.04;                          // alignment dominates -> the pass goes where you aim
     if(sc>bb){bb=sc;best=q;}
   });
   return best;
@@ -934,12 +936,12 @@ function doAction(which, power){
         const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();   // where you're pointing on screen
         const tgt=directionalPassTarget(pl,jd);
         if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
-        // nobody in that direction -> drive a ground ball exactly where you aim
-        ballVel.copy(jd).multiplyScalar(15+18*power); ballVel.y=0.4; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
+        // nobody in that direction -> drive a firm ground ball exactly where you aim
+        ballVel.copy(jd).multiplyScalar(26+22*power); ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
       }
       const tgt=passTarget(pl);              // no aim -> pick the best open teammate forward
       if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
-      ballVel.copy(aimDir(pl)).multiplyScalar(16+16*power); ballVel.y=0.5; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
+      ballVel.copy(aimDir(pl)).multiplyScalar(24+20*power); ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
     }
     pl.kickCd=0.3; owner=null;
     if(which==='A'){            // DISPARO — the joystick aims which way / which corner
@@ -950,7 +952,7 @@ function doAction(which, power){
       let dir;
       if(moveDir.lengthSq()>0.05){
         const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
-        dir=jd.multiplyScalar(0.8).add(toGoal.multiplyScalar(0.3)).normalize();   // you aim; a slight goal pull keeps it honest
+        dir=jd.multiplyScalar(1.0).add(toGoal.multiplyScalar(0.18)).normalize();  // mostly where you aim, tiny goal pull
       }else dir=toGoal;                      // no aim -> straight at goal (not random)
       ballVel.copy(dir).multiplyScalar(20+26*power); ballVel.y=2.5+2.5*power;
       showPower(pl, power);
@@ -1017,6 +1019,17 @@ function gkPass(p){
    power (0.25..1, default 1) scales how hard it is struck. */
 function passBall(p,target,power){
   power=(power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
+  // THROW-IN: the taker throws with his HANDS — the ball leaves from overhead and arcs onto the mate (no offside)
+  if(setPieceLabel==='SAQUE DE BANDA' && throwTimer>0 && setPieceTaker===p){
+    const v2=target.pos.clone().sub(p.pos).setY(0);
+    const d2=THREE.MathUtils.clamp(v2.length(),3,22); v2.normalize();   // a hand throw is short-to-medium, not a rocket
+    const T=THREE.MathUtils.clamp(d2/15,0.5,0.95);
+    ball.position.set(p.pos.x, 2.1, p.pos.z);                 // out of the hands, above the head
+    ballVel.copy(v2).multiplyScalar(d2/T); ballVel.y=GRAV*T/2;   // a hand-throw arc onto the mate
+    p.kickCd=0.9; p.holdT=0; p.throwAnim=0.5; owner=null; throwTimer=0; setPieceForm=0;
+    if(target&&target.team===p.team&&!target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(d2/13,0.6,1.8); }
+    showPower(p,power); return;
+  }
   // offside: flag goes up now, the pass still runs on, then it's whistled back for the free kick
   if(throwTimer<=0 && deadTimer<=0 && isOffside(target,p.team)){
     let ls=linesmen[0]; linesmen.forEach(l=>{ if(Math.abs(l.side*HALF_W-target.pos.x)<Math.abs(ls.side*HALF_W-target.pos.x)) ls=l; });
@@ -1025,7 +1038,7 @@ function passBall(p,target,power){
     scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
-  const ps=0.72+0.3*power;                 // power multiplier on strike strength
+  const ps=0.95+0.15*power;                // strike strength: firm even on a quick tap, a bit more on a charge
   // lead a moving receiver only MODESTLY — the ball slows as it rolls, so a big lead/hard pass overshoots
   const rough=ball.position.distanceTo(target.pos);
   const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(rough*0.04,0.1,0.4)):new THREE.Vector3();
@@ -1049,8 +1062,8 @@ function passBall(p,target,power){
     const T=THREE.MathUtils.clamp(dist/28,0.55,0.95);
     ballVel.copy(v).multiplyScalar(dist/T*1.1*ps); ballVel.y=GRAV*T/2*0.85;
   }else{                                   // crisp ground pass, weighted to land right on the receiver
-    // weighted so the ball rolls TO the receiver and dies there (~dist) instead of running past them
-    const sp=THREE.MathUtils.clamp(dist*1.9, 9, 44)*ps;
+    // weighted so the ball rolls firmly TO the receiver (reaches them with pace, slight roll past)
+    const sp=THREE.MathUtils.clamp(dist*2.0, 15, 50)*ps;
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.2;
   }
   p.kickCd=0.9; p.holdT=0; owner=null;
@@ -1360,10 +1373,15 @@ function stepPlayer(p,dt){
       && (p.team===0?ball.position.z<gz+6:ball.position.z>gz-6);
     if(near){tx=ball.position.x;tz=THREE.MathUtils.clamp(ball.position.z,p.team===0?-HALF_L+1:gz-3,p.team===0?gz+3:HALF_L-1);}
     desired.set(tx-p.pos.x,0,tz-p.pos.z);
-    if(owner===p){                     // GK caught the ball -> hold briefly, then pass out
-      p.gkHold=(p.gkHold||0)+dt;
-      desired.set(0,0,0);
-      if(p.gkHold>0.6){ gkPass(p); p.gkHold=0; }
+    if(owner===p){
+      if(inOwnBox(p)){                  // in his area: hold the ball in hands briefly, then distribute
+        p.gkHold=(p.gkHold||0)+dt;
+        desired.set(0,0,0);
+        if(p.gkHold>0.6){ gkPass(p); p.gkHold=0; }
+      }else{                            // outside his area he CAN'T handle it — drop it to his feet and play it away
+        p.gkHold=0;
+        gkPass(p);                      // clear it to a teammate right away
+      }
     }else{ p.gkHold=0; }
   }else if(koGrace>0 && p.team!==kickoffTeam && !(owner&&owner.team===p.team)){
     // just after a kickoff: the team that didn't kick off holds its kickoff shape in its OWN half and
@@ -1553,6 +1571,7 @@ function stepPlayer(p,dt){
   if(p.slideCd>0)p.slideCd-=dt;
   if(p.kickCd>0)p.kickCd-=dt;
   if((p.dive||0)>0)p.dive-=dt;
+  if((p.throwAnim||0)>0)p.throwAnim-=dt;
   if((p.stealCd||0)>0)p.stealCd-=dt;
   // rarely a forward gambles a run beyond the defence (random, not exaggerated)
   if((p.runGamble||0)>0) p.runGamble-=dt;
@@ -1590,6 +1609,14 @@ function stepPlayer(p,dt){
     u.lArm.rotation.x=-2.75; u.rArm.rotation.x=-2.75; // both arms stretched overhead toward the ball
     u.lArm.rotation.z=0.12;  u.rArm.rotation.z=-0.12;
     u.lLeg.rotation.x=0.18;  u.rLeg.rotation.x=0.18;  // legs trail together
+  }
+  else if((throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA' && owner===p) || (p.throwAnim||0)>0){
+    // throw-in: both hands raised overhead, then swing forward as the ball is released
+    m.rotation.x=0; m.rotation.z=0; m.position.y=FOOT_LIFT;
+    const ang=(p.throwAnim||0)>0 ? THREE.MathUtils.lerp(-2.8,-0.5, 1-(p.throwAnim/0.5)) : -2.8;  // overhead -> swing forward
+    u.lArm.rotation.x=ang; u.rArm.rotation.x=ang;
+    u.lArm.rotation.z=0.16; u.rArm.rotation.z=-0.16;
+    u.lLeg.rotation.x=0; u.rLeg.rotation.x=0;
   }
   else { m.rotation.x=0; m.rotation.z=0; m.position.y=FOOT_LIFT;   // stand ON the grass
     u.lArm.rotation.z=0; u.rArm.rotation.z=0; }       // clear any slide/dive arm splay
@@ -1641,7 +1668,7 @@ function playerBallInteraction(dt){
   // keeper catch: grab when horizontally close and ball not too high (works mid-dive).
   // a keeper who JUST distributed can't instantly re-grab his own throw (that was the stuck bug)
   if(!spHold) players.forEach(p=>{
-    if(!p.gk||(p.fall||0)>0||(p.kickCd||0)>0.35) return;
+    if(!p.gk||(p.fall||0)>0||(p.kickCd||0)>0.35||!inOwnBox(p)) return;   // keepers can only CATCH inside their area
     const dx=p.pos.x-ball.position.x, dz=p.pos.z-ball.position.z;
     let reach=2.7, maxH=3.0;
     if((p.dive||0)>0){ reach=4.1; maxH=GOAL_H+0.3; }     // full-stretch dive: wide and up to the bar
@@ -1654,15 +1681,21 @@ function playerBallInteraction(dt){
   teamHasBall = !!(owner && owner.team===0);
   if(owner) lastTouch=owner.team;              // remember who touched it last (for throw-ins)
 
-  // keeper has the ball: hold it UP in his hands (not on the grass), reaching the way he dived —
-  // so a save looks like a catch with the hands, then he gets up and holds it at his chest
-  if(owner && owner.gk){
+  // keeper has the ball IN HIS AREA: hold it UP in his hands (not on the grass), reaching the way he dived —
+  // so a save looks like a catch with the hands. Outside the box he can't handle it, so it drops to his feet.
+  if(owner && owner.gk && inOwnBox(owner)){
     const diving=(owner.dive||0)>0;
     const dir = diving ? (owner.diveDir||new THREE.Vector3(0,0,owner.team===0?1:-1))
                        : new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
     const reach = diving ? 1.35 : 0.7;
     const hy = diving ? 1.25 : 1.3;                 // ball height at the hands
     const want=owner.pos.clone().addScaledVector(dir,reach); want.y=hy;
+    ball.position.lerp(want,Math.min(1,dt*20)); ballVel.set(0,0,0);
+    return;
+  }
+  // throw-in taker holds the ball OVERHEAD in both hands until the throw is made
+  if(owner && throwTimer>0 && owner===setPieceTaker && setPieceLabel==='SAQUE DE BANDA'){
+    const want=new THREE.Vector3(owner.pos.x, 2.1, owner.pos.z);
     ball.position.lerp(want,Math.min(1,dt*20)); ballVel.set(0,0,0);
     return;
   }
@@ -1685,15 +1718,22 @@ function awardSetPiece(team, x, z, label, taker){
   // formation phase first (teams get into position), then a window to take it
   players.forEach(q=>{ q.slide=0; });        // cancel any slide in progress so nobody dives into the taker
   throwTeam=team; setPieceForm=2.4; throwTimer=2.4+2.4; setPieceLabel=label;
-  x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4);
+  const isThrow=(label==='SAQUE DE BANDA');
+  if(isThrow){ x=(x>=0?1:-1)*(HALF_W+0.3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }   // ON the sideline, just outside
+  else { x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }
   let rec=taker||null;
   if(!rec){ let rd=1e9; const spot=new THREE.Vector3(x,0,z);
     players.forEach(p=>{if(p.team!==team||p.gk||p.sentOff)return; const d=p.pos.distanceTo(spot); if(d<rd){rd=d;rec=p;}}); }
   setPieceTaker=rec; setPieceGK=!!(rec&&rec.gk);
   if(rec){
-    rec.pos.set(x,0,z); rec.vel.set(0,0,0); rec.heading=team===0?0:Math.PI;
-    const fwd=new THREE.Vector3(Math.sin(rec.heading),0,Math.cos(rec.heading));
-    ball.position.set(rec.pos.x+fwd.x*0.6,BALL_R,rec.pos.z+fwd.z*0.6); ballVel.set(0,0,0);
+    rec.pos.set(x,0,z); rec.vel.set(0,0,0);
+    rec.heading = isThrow ? (x>0?-Math.PI/2:Math.PI/2) : (team===0?0:Math.PI);   // throw-in faces INTO the field
+    if(isThrow){
+      ball.position.set(rec.pos.x, 2.1, rec.pos.z); ballVel.set(0,0,0);          // held overhead in the hands
+    }else{
+      const fwd=new THREE.Vector3(Math.sin(rec.heading),0,Math.cos(rec.heading));
+      ball.position.set(rec.pos.x+fwd.x*0.6,BALL_R,rec.pos.z+fwd.z*0.6); ballVel.set(0,0,0);
+    }
     owner=rec; rec.holdT=0; rec.kickCd=0;
     if(team===0 && !rec.gk) ctrl=players.indexOf(rec);   // you take it (outfield) with PASE
   } else { ball.position.set(x,BALL_R,z); ballVel.set(0,0,0); owner=null; }
@@ -1742,8 +1782,10 @@ function offsideCall(attackTeam, pos){
 }
 
 function stepBall(dt){
-  // the keeper is holding the ball in his hands — playerBallInteraction pins it there, so no gravity
-  if(owner && owner.gk) return;
+  // the keeper is holding the ball in his hands (in his area) — pinned there, so no gravity
+  if(owner && owner.gk && inOwnBox(owner)) return;
+  // the throw-in taker holds the ball overhead — pinned there until the throw
+  if(owner && throwTimer>0 && owner===setPieceTaker && setPieceLabel==='SAQUE DE BANDA') return;
   // gravity / integrate
   ballVel.y-=GRAV*dt;
   ball.position.addScaledVector(ballVel,dt);
