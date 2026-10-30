@@ -261,20 +261,20 @@ function buildPitch(){
     new THREE.MeshStandardMaterial({color:0x2f8742,roughness:1}));
   ap.rotation.x=-Math.PI/2; ap.position.y=-0.02; ap.receiveShadow=true; scene.add(ap);
 
-  // lines
-  const lineMat = new THREE.MeshBasicMaterial({color:0xf4f8ff});
-  const t=0.26;
+  // lines — polygonOffset + a small lift stop them z-fighting the grass (no flicker/broken lines at the far end)
+  const lineMat = new THREE.MeshBasicMaterial({color:0xf4f8ff, polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2, depthWrite:false});
+  const t=0.32, LY=0.06;                       // a touch thicker and lifted clear of the turf
   function line(w,l,x,z){
     const m=new THREE.Mesh(new THREE.PlaneGeometry(w,l),lineMat);
-    m.rotation.x=-Math.PI/2; m.position.set(x,0.02,z); scene.add(m);
+    m.rotation.x=-Math.PI/2; m.position.set(x,LY,z); m.renderOrder=1; scene.add(m);
   }
   function arc(rIn,x,z,start,len){
-    const m=new THREE.Mesh(new THREE.RingGeometry(rIn,rIn+t,56,1,start,len),lineMat);
-    m.rotation.x=-Math.PI/2; m.position.set(x,0.02,z); scene.add(m);
+    const m=new THREE.Mesh(new THREE.RingGeometry(rIn,rIn+t,80,1,start,len),lineMat);
+    m.rotation.x=-Math.PI/2; m.position.set(x,LY,z); m.renderOrder=1; scene.add(m);
   }
   function dot(x,z){
-    const m=new THREE.Mesh(new THREE.CircleGeometry(0.26,18),lineMat);
-    m.rotation.x=-Math.PI/2; m.position.set(x,0.02,z); scene.add(m);
+    const m=new THREE.Mesh(new THREE.CircleGeometry(0.3,18),lineMat);
+    m.rotation.x=-Math.PI/2; m.position.set(x,LY,z); m.renderOrder=1; scene.add(m);
   }
   // perimeter + midline
   line(HALF_W*2, t, 0, HALF_L); line(HALF_W*2, t, 0, -HALF_L);
@@ -282,7 +282,7 @@ function buildPitch(){
   line(HALF_W*2, t, 0, 0);
   arc(10.5,0,0,0,Math.PI*2); dot(0,0);                // center circle + spot
   // corner arcs (quarter circles bulging into the pitch)
-  const cr=1.2;
+  const cr=1.6;
   arc(cr,-HALF_W,-HALF_L,0,Math.PI/2);
   arc(cr, HALF_W,-HALF_L,Math.PI/2,Math.PI/2);
   arc(cr, HALF_W, HALF_L,Math.PI,Math.PI/2);
@@ -600,6 +600,7 @@ ball.castShadow=true; scene.add(ball);
   });
 })();
 const ballVel=new THREE.Vector3();
+const ballStart=new THREE.Vector3();   // ball position before the current step (for swept body collision)
 // ball shadow disc
 const bShadow=new THREE.Mesh(new THREE.CircleGeometry(BALL_R,16),
   new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:.3}));
@@ -1204,25 +1205,31 @@ function cpuSteal(){
   }
 }
 
-/* Physics: the ball collides with players' bodies — keepers are a solid wall that blocks/parries */
+/* Physics: the ball collides with players' bodies — keepers are a solid wall that blocks/parries.
+   Swept against the ball's path this step, so even a hard shot can't tunnel straight through a body. */
 function ballDeflect(){
+  const sx=ballStart.x, sz=ballStart.z;                 // segment start (before this step)
+  const ex=ball.position.x, ez=ball.position.z;         // segment end (after this step)
+  const segx=ex-sx, segz=ez-sz; const seg2=segx*segx+segz*segz;
   for(const p of players){
     if(p===owner || (p.fall||0)>0 || p.sentOff) continue;
-    const rad   = p.gk ? 1.7 : (P_R+BALL_R+0.05);     // keepers have a bigger blocking body
+    const rad   = p.gk ? 1.9 : (P_R+BALL_R+0.2);        // body size (keepers are a bigger wall)
     const maxY  = p.gk ? GOAL_H : 2.2;
-    const minSp = p.gk ? 1.5 : 6;                      // keepers stop even a slow ball
-    const dx=ball.position.x-p.pos.x, dz=ball.position.z-p.pos.z;
-    const d=Math.hypot(dx,dz);
-    if(d<rad && ball.position.y<maxY && ballVel.length()>minSp){
+    const minSp = p.gk ? 1.2 : 2.5;                      // even a slowish ball bounces off a body (no pass-through)
+    if(ball.position.y>=maxY || ballVel.length()<=minSp) continue;
+    // closest point on the ball's travel segment to this player's body centre
+    let tt=0; if(seg2>1e-6) tt=THREE.MathUtils.clamp(((p.pos.x-sx)*segx+(p.pos.z-sz)*segz)/seg2,0,1);
+    const cx=sx+segx*tt, cz=sz+segz*tt;
+    const dx=cx-p.pos.x, dz=cz-p.pos.z; const d=Math.hypot(dx,dz);
+    if(d<rad){
       const nx=dx/(d||1), nz=dz/(d||1);
-      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // push the ball out of the body
+      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // place it on the body surface, not past it
       const vn=ballVel.x*nx+ballVel.z*nz;
-      // only respond when the ball is moving INTO the body; add a small, CAPPED pop so it can't
-      // stack up frame after frame into a straight-up rocket (that was the ball-to-the-sky bug)
+      // only respond when moving INTO the body; a small CAPPED vertical pop (never a straight-up rocket)
       if(vn<0){
         const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz;   // reflect off the body
         const damp=p.gk?0.5:0.85; ballVel.x*=damp; ballVel.z*=damp;     // lose a little pace
-        ballVel.y=Math.min(ballVel.y + (p.gk?0.8:1.0), p.gk?3.5:2.0);   // a low pop, capped — never vertical
+        ballVel.y=Math.min(ballVel.y + (p.gk?0.8:1.0), p.gk?3.5:2.0);
       }
     }
   }
@@ -1626,20 +1633,24 @@ function stepPlayer(p,dt){
 
 // soft body collision: players push each other apart instead of overlapping / passing through
 function separatePlayers(){
-  const minD=P_R*1.75;
+  const minD=P_R*2.1;                                  // body spacing matched to the bigger players
   for(let i=0;i<players.length;i++){
     const a=players[i]; if(a.sentOff||(a.fall||0)>0||(a.dive||0)>0) continue;
     for(let j=i+1;j<players.length;j++){
       const b=players[j]; if(b.sentOff||(b.fall||0)>0||(b.dive||0)>0) continue;
       let dx=a.pos.x-b.pos.x, dz=a.pos.z-b.pos.z; const d=Math.hypot(dx,dz);
       if(d<minD && d>1e-4){
-        const push=(minD-d)*0.5; dx/=d; dz/=d;
+        const overlap=minD-d; dx/=d; dz/=d;
         // a frozen set-piece/kickoff taker stays planted; the ball carrier holds ground a bit more
         const afr=(awaitKickoffPass&&a===kickoffTaker)||(throwTimer>0&&a===setPieceTaker);
         const bfr=(awaitKickoffPass&&b===kickoffTaker)||(throwTimer>0&&b===setPieceTaker);
-        const aw=afr?0:((owner===a)?0.3:0.5), bw=bfr?0:((owner===b)?0.3:0.5);
-        a.pos.x+=dx*push*aw*2; a.pos.z+=dz*push*aw*2;
-        b.pos.x-=dx*push*bw*2; b.pos.z-=dz*push*bw*2;
+        const aw=afr?0:((owner===a)?0.35:0.5), bw=bfr?0:((owner===b)?0.35:0.5);
+        const tw=(aw+bw)||1;
+        a.pos.x+=dx*overlap*(aw/tw); a.pos.z+=dz*overlap*(aw/tw);     // share the fix by weight (no double push / jitter)
+        b.pos.x-=dx*overlap*(bw/tw); b.pos.z-=dz*overlap*(bw/tw);
+        // bleed off the velocity driving them together, so they slide past instead of shoving/vibrating
+        const avn=a.vel.x*dx+a.vel.z*dz; if(avn<0){ a.vel.x-=dx*avn*0.6; a.vel.z-=dz*avn*0.6; }
+        const bvn=-(b.vel.x*dx+b.vel.z*dz); if(bvn<0){ b.vel.x+=dx*bvn*0.6; b.vel.z+=dz*bvn*0.6; }
         a.mesh.position.x=a.pos.x; a.mesh.position.z=a.pos.z;
         b.mesh.position.x=b.pos.x; b.mesh.position.z=b.pos.z;
       }
@@ -1787,6 +1798,7 @@ function stepBall(dt){
   if(owner && owner.gk && inOwnBox(owner)) return;
   // the throw-in taker holds the ball overhead — pinned there until the throw
   if(owner && throwTimer>0 && owner===setPieceTaker && setPieceLabel==='SAQUE DE BANDA') return;
+  ballStart.set(ball.position.x, ball.position.y, ball.position.z);   // remember where it was (swept collision)
   // gravity / integrate
   ballVel.y-=GRAV*dt;
   ball.position.addScaledVector(ballVel,dt);
