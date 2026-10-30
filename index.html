@@ -667,6 +667,7 @@ let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then 
 let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pass; foes held in their half until then
 let koGrace=0;                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
 let passReceiver=null, passSeekT=0;   // the mate a pass is heading to moves to meet it, so passes connect
+let possTeam=-1, possConfirmTeam=-1, possConfirmT=0;   // which team is "in possession" for shape (with hysteresis)
 function scheduleRestart(delay, label, fn){
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
   throwTimer=0; setPieceForm=0;              // a new whistle supersedes any pending set-piece
@@ -998,22 +999,34 @@ function cpuTryKick(p){
   return false;                                                       // else keep driving toward goal
 }
 
-/* Goalkeeper distributes: roll it out to an OPEN teammate (short and safe), not a big hoof */
+/* Goalkeeper distributes: find an OPEN teammate FORWARD and wide, never across his own goal.
+   If there's no safe option, clear it long and wide upfield — never a random ball into danger. */
 function gkPass(p){
   const dir=p.team===0?1:-1;              // attack direction in Z
+  const gz=p.team===0?-HALF_L:HALF_L;     // our own goal line
   let best=null,bb=-1e9;
   players.forEach(q=>{
     if(q.team!==p.team||q.gk||q.sentOff) return;
     let md=1e9; players.forEach(d=>{if(d.team!==p.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
     const dist=q.pos.distanceTo(p.pos);
-    // prefer an OPEN, not-too-far mate to play out to
-    let sc=(md>5?6:md>3?3:-2) - dist*0.12 + q.pos.z*dir*0.25 + (isOffside(q,p.team)?-9:0);
-    if(p.team===0 && q===ctrlPlayer()) sc+=2;   // prefer passing to the human's player
+    const fwd=(q.pos.z-p.pos.z)*dir;        // + = toward the opponent goal (safe), - = back toward our goal
+    const nearOwnGoal = Math.abs(q.pos.z-gz)<20 && Math.abs(q.pos.x)<13;   // central zone in front of our goal
+    // prefer open, forward, reachable; punish a mate standing in our own danger zone or behind us
+    let sc=(md>6?7:md>4?4:md>2.5?1:-3) + fwd*0.35 - dist*0.07 + (isOffside(q,p.team)?-9:0) - (nearOwnGoal?10:0);
+    if(fwd<-1) sc-=8;                       // never roll it BACKWARD toward our own goal
+    if(md<2.5) sc-=6;                       // and not to a tightly-marked mate (could be robbed in the box)
+    if(p.team===0 && q===ctrlPlayer()) sc+=2;
     if(sc>bb){bb=sc;best=q;}
   });
-  if(!best) return;
-  passBall(p,best);                         // roll it out (ground unless a long lane is blocked)
-  if(p.team===0) ctrl=players.indexOf(best);
+  if(best && bb>-2){
+    passBall(p,best);                       // roll/clip it to the safe open mate
+    if(p.team===0) ctrl=players.indexOf(best);
+    return;
+  }
+  // nobody safe: clear it LONG and WIDE upfield (never into the middle in front of our own goal)
+  const sideX=(Math.abs(p.pos.x)>1?Math.sign(p.pos.x):(Math.random()<0.5?-1:1))*(HALF_W*0.55);
+  const v=new THREE.Vector3(sideX-p.pos.x,0,dir*38).setY(0).normalize();
+  ballVel.copy(v).multiplyScalar(36); ballVel.y=9; p.kickCd=0.9; p.holdT=0; owner=null; showPower(p,1);
 }
 
 /* Pass the ball to a target teammate: lofted if a rival blocks the lane, else on the ground.
@@ -1401,7 +1414,7 @@ function stepPlayer(p,dt){
     if(desired.lengthSq()<0.3) desired.set(0,0,0);
   }else{
     const myChaser = p.team===0?chaser0:chaser1;
-    const weHave = owner && owner.team===p.team;
+    const weHave = (possTeam===p.team);        // SHAPE possession (hysteresis) — not the 1-frame ball owner
     const base=FORM[p.team][p.roleIdx];
     // shift formation: push forwards into attack when we have the ball, drop back otherwise
     let bx=base[0]+ball.position.x*.35;
@@ -1472,41 +1485,38 @@ function stepPlayer(p,dt){
       if(acted) desired.set(0,0,0);
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
     }else if(!weHave){
-      // realistic defending with ROTATING roles (by current position, not fixed shirt):
-      //   nearest wins it · deepest covers the box · highest waits for the counter · the rest mark.
-      // A given player cycles through these jobs as play moves, so it never looks robotic.
+      // DEFEND (stable zonal, no oscillation): ONE man presses the ball, ONE stays up as the counter outlet,
+      // and EVERYONE else DROPS into a line goal-side of the ball and marks. Targets depend only on the ball
+      // and on each player's own lane, so the whole team gets back to defend instead of jittering in place.
       const roles=defRoleCache[p.team]||{};
       const rank=ballRank(p);
       const ownGoalZ=p.team===0?-HALF_L:HALF_L;
-      const gdir=p.team===0?1:-1;                         // our attacking direction in z
-      const carrier=(owner&&owner.team!==p.team)?owner:null;
-      const veryClose=carrier && p.pos.distanceTo(carrier.pos)<4.2;
-      const rightOnGoal=Math.abs(ball.position.z-ownGoalZ)<15;   // ball truly on top of our box
+      const gdir=p.team===0?1:-1;                          // our attacking direction in z
+      const toOwnGoal=Math.abs(ball.position.z-ownGoalZ);  // how close the ball is to our goal
+      // a defensive line ~8m goal-side of the ball, never past our own goal line
+      const lineZ = gdir>0 ? Math.max(ball.position.z-8, ownGoalZ+4)
+                           : Math.min(ball.position.z+8, ownGoalZ-4);
       if(p===roles.presser){
-        desired.copy(ball.position).sub(p.pos).setY(0);   // whoever is nearest closes the ball down
+        desired.copy(ball.position).sub(p.pos).setY(0);    // nearest man closes the ball down
       }else if(p===roles.cover){
-        // the deepest man guards the space in front of our goal, but STEPS OUT to cut a counter when a
-        // rival carrier is running at us (the CPU commits hard; your defender holds off more since YOU steer)
-        const deepX=THREE.MathUtils.clamp(ball.position.x*0.5,-GOAL_W-2,GOAL_W+2);
-        const deepZ=ownGoalZ+gdir*13;
-        const toGoal=carrier?(carrier.pos.z-ownGoalZ)*gdir:999;   // carrier's distance from our goal
-        if(carrier && toGoal>2 && toGoal<42){
-          const commit = p.team===1 ? 0.6 : 0.3;                  // how far out to meet them
-          const tx=THREE.MathUtils.lerp(deepX, carrier.pos.x, commit);
-          const tz=THREE.MathUtils.lerp(deepZ, carrier.pos.z, commit);
-          desired.set(tx-p.pos.x,0,tz-p.pos.z);
-        }else{
-          desired.set(deepX-p.pos.x,0,deepZ-p.pos.z);
-        }
-      }else if(p===roles.outlet && !rightOnGoal){
-        desired.set(bx-p.pos.x,0,bz-p.pos.z);             // the highest man stays up, ready for the counterattack
-      }else if((veryClose||rightOnGoal) && rank<=1){
-        desired.copy(ball.position).sub(p.pos).setY(0);   // a SECOND man doubles up only when it's really on
+        // the deepest man is the LAST line (sweeper): always GOAL-SIDE of the ball, near our goal
+        const sweepZ = gdir>0 ? Math.min(ownGoalZ+10, ball.position.z-3)
+                              : Math.max(ownGoalZ-10, ball.position.z+3);
+        const sweepX = THREE.MathUtils.clamp(ball.position.x*0.4, -GOAL_W-3, GOAL_W+3);
+        desired.set(sweepX-p.pos.x, 0, sweepZ-p.pos.z);
+      }else if(p===roles.outlet && toOwnGoal>20){
+        desired.set(bx-p.pos.x,0,bz-p.pos.z);              // highest man stays up for the counter (until it's on our box)
       }else{
-        // otherwise, mark the nearest opponent, standing goal-side of them
+        // drop into the line, keeping your lane (formation side), shading onto a nearby man to mark
+        let tx=base[0]*0.75 + ball.position.x*0.35;
+        let tz=lineZ;
         const m=pickMark(p);
-        if(m) desired.set(m.pos.x-p.pos.x,0,(m.pos.z-gdir*2)-p.pos.z);
-        else  desired.set(bx-p.pos.x,0,bz-p.pos.z);
+        if(m && Math.abs(m.pos.x-tx)<10){
+          tx=m.pos.x;
+          tz = gdir>0 ? Math.min(lineZ, m.pos.z-2) : Math.max(lineZ, m.pos.z+2);  // mark goal-side, but never ahead of the line
+        }
+        desired.set(tx-p.pos.x,0,tz-p.pos.z);
+        if(toOwnGoal<16 && rank<=1) desired.copy(ball.position).sub(p.pos).setY(0);  // a man right on the ball in our box
       }
       // cpu slide-tackles the human carrier when pressing and close
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0 && rank<=1
@@ -1538,8 +1548,11 @@ function stepPlayer(p,dt){
   if((p.dive||0)>0) spd=Math.max(spd,26);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,16.5);   // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
-  if(owner===p && p.team===1) spd=Math.max(spd,12.7);  // red runs with the ball
+  if(owner===p && p.team===1) spd=Math.max(spd,11.0);  // red runs with the ball (not faster than a recovering defender)
   if(redDefend) spd=Math.max(spd,12.8);                // red hustles to win it back
+  // a defender caught UPFIELD of the ball sprints back to recover goal-side (both teams) — so they get back to defend
+  const _gd = p.team===0?1:-1;
+  if(!p.gk && possTeam!==p.team && (p.pos.z-ball.position.z)*_gd > 2) spd=Math.max(spd,13.4);
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   if(desired.lengthSq()>0.001){
     desired.normalize();
@@ -1692,6 +1705,13 @@ function playerBallInteraction(dt){
   if(owner && owner.team===0 && !owner.gk && owner!==ctrlPlayer()) ctrl=players.indexOf(owner);
   teamHasBall = !!(owner && owner.team===0);
   if(owner) lastTouch=owner.team;              // remember who touched it last (for throw-ins)
+  // POSSESSION HYSTERESIS for the team SHAPE: a team is "in possession" only after holding the ball for a
+  // moment, so a contested / 50-50 ball doesn't flip both teams between attack and defend every frame
+  // (that flicker was making defenders push up instead of dropping back).
+  if(owner){
+    if(owner.team===possConfirmTeam) possConfirmT+=dt; else { possConfirmTeam=owner.team; possConfirmT=0; }
+    if(possConfirmT>=0.15) possTeam=owner.team;
+  }  // loose ball: keep the last confirmed possession (so we stay organised while it's scrambled)
 
   // keeper has the ball IN HIS AREA: hold it UP in his hands (not on the grass), reaching the way he dived —
   // so a save looks like a catch with the hands. Outside the box he can't handle it, so it drops to his feet.
