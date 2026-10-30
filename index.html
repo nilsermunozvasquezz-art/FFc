@@ -1024,7 +1024,8 @@ function passBall(p,target,power){
     const v2=target.pos.clone().sub(p.pos).setY(0);
     const d2=THREE.MathUtils.clamp(v2.length(),3,22); v2.normalize();   // a hand throw is short-to-medium, not a rocket
     const T=THREE.MathUtils.clamp(d2/15,0.5,0.95);
-    ball.position.set(p.pos.x, 2.1, p.pos.z);                 // out of the hands, above the head
+    // release from the hands but start the ball just INSIDE the line so it's in play (not instantly "out" again)
+    ball.position.set(THREE.MathUtils.clamp(p.pos.x,-HALF_W+0.4,HALF_W-0.4), 2.1, p.pos.z);
     ballVel.copy(v2).multiplyScalar(d2/T); ballVel.y=GRAV*T/2;   // a hand-throw arc onto the mate
     p.kickCd=0.9; p.holdT=0; p.throwAnim=0.5; owner=null; throwTimer=0; setPieceForm=0;
     if(target&&target.team===p.team&&!target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(d2/13,0.6,1.8); }
@@ -1433,14 +1434,14 @@ function stepPlayer(p,dt){
       const isTaker=(p.team===throwTeam);
       let adv;
       if(isTaker){
-        adv = setPieceLabel==='SAQUE DE BANDA' ? 10      // throw-in: push up the pitch to support
-            : setPieceLabel==='TIRO LIBRE'     ? 12      // free kick for us: push up to attack it
-            : setPieceLabel==='SAQUE DE META'  ? 4       // goal kick: spread to receive
-            : 3;                                         // offside restart: just play it out
+        adv = setPieceLabel==='SAQUE DE BANDA' ? 15      // throw-in for us: push well up the pitch to support
+            : setPieceLabel==='TIRO LIBRE'     ? 18      // free kick for us: push up hard to attack it
+            : setPieceLabel==='SAQUE DE META'  ? 7       // goal kick: spread and come to receive
+            : 5;                                         // offside restart: nudge up
       }else{
-        adv = setPieceLabel==='SAQUE DE BANDA' ? -4      // defending a throw-in: hold a touch deeper
-            : setPieceLabel==='SAQUE DE META'  ? -2
-            : -10;                                       // free kick / offside against us: drop back to defend
+        adv = setPieceLabel==='SAQUE DE BANDA' ? -8      // defending a throw-in: drop deeper
+            : setPieceLabel==='SAQUE DE META'  ? -4
+            : -16;                                       // free kick / offside against us: drop right back to defend
       }
       const fz=THREE.MathUtils.clamp(f[1]*0.5 + ball.position.z*0.3 + dir*adv, -HALF_L+3, HALF_L-3);
       if(owner===p) desired.set(0,0,0);
