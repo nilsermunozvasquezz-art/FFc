@@ -180,7 +180,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from './libs/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from './libs/jsm/utils/SkeletonUtils.js';
 let GLB_SCENE=null, GLB_CLIPS=null, RED_TEX=null;
-let __GLB_B64='';                             // artifact build injects the model here as base64 (decoded + parsed, no fetch)
+let REF_SCENE=null, REF_CLIPS=null, LINES_SCENE=null, LINES_CLIPS=null;
+let __GLB_B64='', __REF_B64='', __LINES_B64='';   // artifact build injects each model here as base64 (parsed, no fetch)
 const MODEL_SCALE=2.35, MODEL_YAW=0;          // bigger players; model already faces +Z
 // make a RED-kit version of the (blue) base-colour texture by rotating its hue
 function buildRedTexture(root){
@@ -473,8 +474,10 @@ function makePlayer(shirt, shorts, skin){
 
 /* team setup: 0 = blue (player model as-is), 1 = red (hue-shifted model) */
 // ---- 3D model player: a skinned clone of the loaded GLB, with its own animation mixer ----
-// clip order in the GLB: 0 Running, 1 Walking, 2 idle(long), 3 (uuid), 4 Kick, 5 Sprint, 6 slide_light, 7 slide_right
-const CLIP={run:0, walk:1, idle:2, kick:4, slideL:6, slideR:7};
+// map each game state to the animation clip NAME in the GLB (robust to clip order)
+const CLIP={ run:'Running', walk:'Walking', idle:'Idle_9', kick:'Kick_a_Soccer_Ball',
+  slideL:'slide_light', slideR:'slide_right', dive:'Leap_Right_and_Catch',
+  fall:'Knock_Down_1', getup:'Stand_Up4', turn:'Walk_Turn_Right' };
 function makeGlbPlayer(team, gk){
   const g=skeletonClone(GLB_SCENE);
   g.scale.setScalar(MODEL_SCALE * (gk?1.02:1));
@@ -492,7 +495,7 @@ function makeGlbPlayer(team, gk){
 function setupPlayerAnim(p){
   p.mixer=new THREE.AnimationMixer(p.mesh);
   p.act={};
-  for(const k in CLIP){ const clip=GLB_CLIPS[CLIP[k]]; if(clip) p.act[k]=p.mixer.clipAction(clip); }
+  for(const k in CLIP){ const clip=GLB_CLIPS.find(c=>c.name===CLIP[k]); if(clip) p.act[k]=p.mixer.clipAction(clip); }
   if(p.act.idle){ p.act.idle.play(); p.curAnim='idle'; }
   p.mixer.update(Math.random()*2);   // desync the cycles so they don't move in lockstep
 }
@@ -510,13 +513,27 @@ function switchClip(p, name, once, ts){
 }
 function driveAnim(p, state, speed, dt){
   if(!p.mixer) return;
-  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/8.5,0.7,1.7));
-  else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/4.0,0.6,1.5));
+  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/9.5,0.7,1.7));
+  else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/4.5,0.6,1.5));
   else if(state==='idle') switchClip(p,'idle',false, 1);
   else if(state==='kick') switchClip(p,'kick',true, 1.35);
   else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.2);
-  else if(state==='dive') switchClip(p, (p.diveDir&&p.diveDir.x<0?'slideL':'slideR'), true, 1.3);
+  else if(state==='dive') switchClip(p,'dive', true, 1.2);          // real keeper leap+catch clip
+  else if(state==='fall') switchClip(p,'fall', true, 1.0);          // knocked down
+  else if(state==='getup')switchClip(p,'getup',true, 1.2);          // getting back up
   p.mixer.update(dt);
+}
+
+// ---- officials (referee + linesmen) as 3D models with their own mixers ----
+function makeGlbOfficial(srcScene){
+  const g=skeletonClone(srcScene);
+  g.scale.setScalar(MODEL_SCALE);
+  g.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
+  scene.add(g); return g;
+}
+function officialActs(mixer, clips, map){
+  const act={}; for(const k in map){ const c=clips.find(x=>x.name===map[k]); if(c) act[k]=mixer.clipAction(c); }
+  return act;
 }
 
 const SKIN=[0xf0c69a,0xd8a877,0xb07a48,0xf5d3ad];
@@ -577,13 +594,15 @@ function resetPositions(kickTeam){
 }
 
 /* referee */
-const ref = makePlayer(0x111111,0x111111,0xe0b080);
-ref.userData.ring.visible=false;
+const ref = makeGlbOfficial(REF_SCENE);         // 3D referee model (yellow kit)
+const refMixer = new THREE.AnimationMixer(ref);
+const refObj = { act:officialActs(refMixer, REF_CLIPS, {walk:'Walking', run:'Running', angry:'Angry_Stomp'}), curAnim:null, mixer:refMixer };
+if(refObj.act.walk){ refObj.act.walk.play(); refObj.curAnim='walk'; }
 const refPos=new THREE.Vector3(6,0,6);
-// card the referee raises on a foul
-const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.6,0.05),
+// card the referee raises on a foul (held up at head height; the model is scaled, so use model-space coords)
+const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.4,0.04),
   new THREE.MeshBasicMaterial({color:0xffd21a}));
-refCard.position.set(0.62,2.45,0); refCard.visible=false; ref.add(refCard);
+refCard.position.set(0.45,1.65,0.15); refCard.visible=false; ref.add(refCard);
 let cardTimer=0;
 
 /* assistant referees (linesmen) run the touchlines and flag offside */
@@ -600,48 +619,42 @@ function checkerFlagTex(){
   return t;
 }
 function makeLinesman(sideSign){
-  const m=makePlayer(0xffe14a,0x101010,0xdca878);   // yellow assistant kit
-  m.userData.ring.visible=false;
+  const m=makeGlbOfficial(LINES_SCENE);               // 3D assistant-referee model
+  const mixer=new THREE.AnimationMixer(m);
+  const act=officialActs(mixer, LINES_CLIPS, {walk:'Walking', run:'Running', idle:'Idle_9'});
+  if(act.idle) act.idle.play();
+  // checkered flag held at the right side (model-space; the group is scaled with the model)
   const flag=new THREE.Group();
-  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.035,.035,1.5,6),
-    new THREE.MeshBasicMaterial({color:0x202020}));
-  pole.position.y=-0.75; flag.add(pole);                 // extends down from the gripping hand
-  const cloth=new THREE.Mesh(new THREE.PlaneGeometry(.95,.6),
-    new THREE.MeshBasicMaterial({map:checkerFlagTex(),side:THREE.DoubleSide}));
-  cloth.position.set(.45,-1.2,0); flag.add(cloth);       // checkered cloth at the free end of the pole
-  flag.position.set(0,-0.72,0);                          // gripped at the hand...
-  flag.rotation.x=-0.35;                                 // held down and out (not dragging the turf)
-  m.userData.rArm.add(flag);                             // ...and carried IN the right hand, moving with it
-  return {mesh:m,flag,side:sideSign,z:0,flagUp:0,heading:(sideSign>0?-Math.PI/2:Math.PI/2),u:m.userData};
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,0.95,6), new THREE.MeshBasicMaterial({color:0x1a1a1a}));
+  pole.position.y=0.47; flag.add(pole);
+  const cloth=new THREE.Mesh(new THREE.PlaneGeometry(.5,.32), new THREE.MeshBasicMaterial({map:checkerFlagTex(),side:THREE.DoubleSide}));
+  cloth.position.set(.27,0.82,0); flag.add(cloth);
+  flag.position.set(0.42,0.75,0.1);                   // right hand height
+  m.add(flag);
+  return {mesh:m, mixer, act, curAnim:'idle', flag, side:sideSign, z:0, flagUp:0, heading:(sideSign>0?-Math.PI/2:Math.PI/2)};
 }
 const linesmen=[makeLinesman(1),makeLinesman(-1)];
 linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,0));
 function stepLinesmen(dt){
   linesmen.forEach(l=>{
-    // each assistant covers one half: follow the ball in your half, hold near the halfway line otherwise
     const tz = l.side>0 ? THREE.MathUtils.clamp(ball.position.z, -2, HALF_L-3)
                         : THREE.MathUtils.clamp(ball.position.z, -(HALF_L-3), 2);
-    // tracking the ball in your own half is quick; recovering to position when play is on
-    // the other half is a slower jog back (each assistant owns one half of the pitch)
     const inMyHalf = l.side>0 ? ball.position.z > -1 : ball.position.z < 1;
     const prevZ=l.z;
     l.z+=(tz-l.z)*Math.min(1,dt*(inMyHalf?2.5:0.9));
-    const vz=(l.z-prevZ)/Math.max(dt,1e-4);              // running speed along the line (units/s)
-    const run=Math.abs(vz);
+    const run=Math.abs((l.z-prevZ)/Math.max(dt,1e-4));
     l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,l.z);
-    // turn to run facing the way they move; square up to the pitch again when they settle
+    const vz=l.z-prevZ;
     const faceField = l.side>0?-Math.PI/2:Math.PI/2;
     const target = run>1.3 ? (vz>0?0:Math.PI) : faceField;
     let dh=target-l.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
     l.heading+=dh*Math.min(1,dt*7);
     l.mesh.rotation.set(0,l.heading,0);
-    // leg + arm swing scales with pace: a gentle walk up to a clear run
-    const u=l.u; u.phase+=dt*(4+run*1.4); const amp=Math.min(0.95, 0.1+run*0.1);
-    const sw=Math.sin(u.phase)*amp;
-    u.lLeg.rotation.x=sw; u.rLeg.rotation.x=-sw;
-    // the flag hangs from the right hand; raising that arm raises the flag (offside signal)
-    if(l.flagUp>0){ l.flagUp-=dt; u.rArm.rotation.x=-2.75; u.lArm.rotation.x=0; }
-    else { u.lArm.rotation.x=-sw*.7; u.rArm.rotation.x=sw*.35; }
+    // offside: stand still and raise the flag; otherwise walk/run by pace
+    if(l.flagUp>0){ l.flagUp-=dt; switchClip(l,'idle',false,1); l.flag.rotation.set(0,0,2.0); l.flag.position.set(0.25,1.35,0.1); }
+    else { switchClip(l, run>3.5?'run':(run>0.5?'walk':'idle'), false, run>3.5?THREE.MathUtils.clamp(run/9,0.8,1.5):1);
+           l.flag.rotation.set(0,0,-0.25); l.flag.position.set(0.42,0.75,0.1); }
+    l.mixer.update(dt);
   });
 }
 
@@ -1353,13 +1366,22 @@ function stepPlayer(p,dt){
     return;
   }
 
-  // knocked down by a tackle -> fall to the ground, can't move (no fall clip -> tilt the body)
+  // knocked down by a tackle -> play the real KNOCK-DOWN clip, then GET UP
   if((p.fall||0)>0){
     p.fall-=dt; p.vel.multiplyScalar(0.82); p.pos.addScaledVector(p.vel,dt);
-    const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT+0.08,p.pos.z);
-    m.rotation.set(-1.3,p.heading+MODEL_YAW,0);             // lying back on the turf
+    const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
+    driveAnim(p,'fall',0,dt);
     m.userData.ring.visible=(p===ctrlPlayer());
-    if(p.mixer) p.mixer.update(dt);
+    if(p.fall<=0) p.getupT=0.85;                  // once down, start getting up
+    if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
+    return;
+  }
+  // getting back up after a fall
+  if((p.getupT||0)>0){
+    p.getupT-=dt; p.vel.multiplyScalar(0.7); p.pos.addScaledVector(p.vel,dt);
+    const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
+    driveAnim(p,'getup',0,dt);
+    m.userData.ring.visible=(p===ctrlPlayer());
     if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
     return;
   }
@@ -1678,27 +1700,12 @@ function stepPlayer(p,dt){
   if((p.kickTrig||0)>0) p.kickTrig-=dt;
 
   let state;
-  if(p.slide>0){
-    // slide tackle: the clip is low along the grass; tilt a touch and stay low
-    state='slide';
-    const pr=THREE.MathUtils.clamp(1-p.slide/(p.slideMax||0.5),0,1), ease=Math.sin(pr*Math.PI);
-    m.rotation.x=-0.25*ease; m.position.y=FOOT_LIFT;
-  }else if((p.dive||0)>0){
-    // keeper dive: no dive clip -> use the slide clip and lay the body out sideways, arcing off the turf
-    state='dive';
-    const pr=THREE.MathUtils.clamp(1-p.dive/(p.diveMax||0.6),0,1), arc=Math.sin(pr*Math.PI);
-    const side=(p.diveDir&&p.diveDir.x<0)?1:-1;
-    m.rotation.z=side*1.15*arc; m.rotation.x=-0.3*arc;
-    m.position.y=FOOT_LIFT+0.25+arc*0.6;
-  }else if((p.kickTrig||0)>0){
-    state='kick';
-  }else if(p.speed>5.5){
-    state='run';
-  }else if(p.speed>0.8){
-    state='walk';
-  }else{
-    state='idle';
-  }
+  if(p.slide>0) state='slide';            // real slide-tackle clip handles the low lay-out
+  else if((p.dive||0)>0) state='dive';    // real keeper leap+catch clip
+  else if((p.kickTrig||0)>0) state='kick';
+  else if(p.speed>5.5) state='run';
+  else if(p.speed>0.8) state='walk';
+  else state='idle';
   driveAnim(p, state, p.speed, dt);
   m.userData.ring.visible=(p===ctrlPlayer());
 }
@@ -1964,12 +1971,11 @@ function stepReferee(dt){
   ref.position.set(refPos.x,FOOT_LIFT,refPos.z);
   const faceAt=(booking?foulSpot:ball.position).clone().sub(refPos); faceAt.y=0;
   if(faceAt.lengthSq()>0.02) ref.rotation.y=Math.atan2(faceAt.x,faceAt.z);
-  const u=ref.userData; const spd=refVel.length();
-  u.phase+=dt*(4+spd*1.1);
-  const sw=Math.sin(u.phase)*Math.min(0.6,0.15+spd*0.06);
-  u.lLeg.rotation.x=sw;u.rLeg.rotation.x=-sw;
-  if(booking){ u.rArm.rotation.x=-2.6; u.lArm.rotation.x=0; }   // arm raised with the card
-  else { u.lArm.rotation.x=-sw*.8; u.rArm.rotation.x=sw*.8; }
+  // drive the referee's 3D animation: angry stomp while booking, else run/walk by pace
+  const spd=refVel.length();
+  if(booking) switchClip(refObj,'angry',false,1);
+  else switchClip(refObj, spd>4?'run':'walk', false, spd>4?THREE.MathUtils.clamp(spd/9,0.8,1.5):THREE.MathUtils.clamp(spd/4+0.4,0.6,1.4));
+  refMixer.update(dt);
   if(cardTimer>0){ cardTimer-=dt; if(cardTimer<=0) refCard.visible=false; }
 }
 
@@ -2146,26 +2152,28 @@ kickoff(1); running=false;
 requestAnimationFrame(loop);
 }  // end __startGame
 
-// ---- load the 3D player model, then build the game ----
+// ---- load the player + referee + linesman models, then build the game ----
 (function(){
   const ov=document.getElementById('loadov'), pct=document.getElementById('loadpct'), bar=document.getElementById('loadbar');
-  function onGLB(g){
-    GLB_SCENE=g.scene; GLB_CLIPS=g.animations;
-    try{ RED_TEX=buildRedTexture(GLB_SCENE); }catch(e){ console.warn('red tex',e); }
-    try{ __startGame(); }catch(e){ console.error(e); if(ov) ov.innerHTML='<div style="color:#fff">Error al iniciar</div>'; return; }
-    if(ov) ov.style.display='none';
-  }
-  function onProg(ev){ if(ev && ev.total && pct){ const p=Math.round(ev.loaded/ev.total*100); pct.textContent=p+'%'; if(bar) bar.style.width=p+'%'; } }
-  function onErr(err){ console.error('GLB load failed', err); if(ov) ov.innerHTML='<div style="color:#fff;padding:20px;text-align:center">No se pudo cargar el modelo 3D.<br>'+(err&&err.message||'')+'</div>'; }
-  const loader=new GLTFLoader();
-  if(typeof __GLB_B64!=='undefined' && __GLB_B64){
-    // model inlined as base64 (artifact build): DECODE + PARSE — no fetch, so CSP can't block it
-    try{ if(pct) pct.textContent='…'; const bin=atob(__GLB_B64); const u8=new Uint8Array(bin.length);
-      for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
-      loader.parse(u8.buffer, '', onGLB, onErr);
-    }catch(e){ onErr(e); }
-  }else{
-    loader.load('./player.glb', onGLB, onProg, onErr);     // model as a separate file (repo / server build)
-  }
+  function onErr(err){ console.error('GLB load failed', err); if(ov) ov.innerHTML='<div style="color:#fff;padding:20px;text-align:center">No se pudo cargar un modelo 3D.<br>'+(err&&err.message||'')+'</div>'; }
+  // load one model, either from an inlined base64 blob (parse, CSP-safe) or a separate file
+  function loadOne(b64, url){ return new Promise((res,rej)=>{ const loader=new GLTFLoader();
+    if(b64){ try{ const bin=atob(b64); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i); loader.parse(u8.buffer,'',res,rej); }catch(e){ rej(e); } }
+    else loader.load(url, res, (ev)=>{ if(ev&&ev.total&&pct){ const p=Math.round(ev.loaded/ev.total*100); pct.textContent=p+'%'; if(bar)bar.style.width=p+'%'; } }, rej); }); }
+  (async function(){
+    try{
+      if(pct) pct.textContent='…';
+      const [pg,rg,lg]=await Promise.all([
+        loadOne(__GLB_B64, './player.glb'),
+        loadOne(__REF_B64, './ref.glb'),
+        loadOne(__LINES_B64, './lines.glb') ]);
+      GLB_SCENE=pg.scene; GLB_CLIPS=pg.animations;
+      REF_SCENE=rg.scene; REF_CLIPS=rg.animations;
+      LINES_SCENE=lg.scene; LINES_CLIPS=lg.animations;
+      try{ RED_TEX=buildRedTexture(GLB_SCENE); }catch(e){ console.warn('red tex',e); }
+      __startGame();
+      if(ov) ov.style.display='none';
+    }catch(err){ onErr(err); }
+  })();
 })();
 </script>
