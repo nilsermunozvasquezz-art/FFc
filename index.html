@@ -476,7 +476,7 @@ function makePlayer(shirt, shorts, skin){
 // ---- 3D model player: a skinned clone of the loaded GLB, with its own animation mixer ----
 // map each game state to the animation clip NAME in the GLB (robust to clip order)
 const CLIP={ run:'Running', walk:'Walking', idle:'Idle_9', kick:'Kick_a_Soccer_Ball',
-  slideL:'slide_light', slideR:'slide_right', dive:'Leap_Right_and_Catch',
+  slideL:'slide_light', slideR:'slide_right', catch:'Leap_Right_and_Catch',
   fall:'Knock_Down_1', getup:'Stand_Up4', turn:'Walk_Turn_Right' };
 function makeGlbPlayer(team, gk){
   const g=skeletonClone(GLB_SCENE);
@@ -507,20 +507,23 @@ function switchClip(p, name, once, ts){
     to.enabled=true; to.setEffectiveWeight(1);
     to.setLoop(once?THREE.LoopOnce:THREE.LoopRepeat, once?1:Infinity);
     to.clampWhenFinished=!!once; to.reset(); to.timeScale=ts||1; to.play();
-    if(from && from!==to){ from.play(); from.crossFadeTo(to, 0.16, false); }
+    if(from && from!==to){ from.play(); from.crossFadeTo(to, (once?0.12:0.28), false); }   // smoother blends for a natural look
     p.curAnim=name;
   } else { to.timeScale=ts||1; }
 }
 function driveAnim(p, state, speed, dt){
   if(!p.mixer) return;
-  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/9.5,0.7,1.7));
-  else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/4.5,0.6,1.5));
+  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/10,0.75,1.6));
+  else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/4.2,0.7,1.5));
   else if(state==='idle') switchClip(p,'idle',false, 1);
   else if(state==='kick') switchClip(p,'kick',true, 1.35);
-  else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.2);
-  else if(state==='dive') switchClip(p,'dive', true, 1.2);          // real keeper leap+catch clip
-  else if(state==='fall') switchClip(p,'fall', true, 1.0);          // knocked down
-  else if(state==='getup')switchClip(p,'getup',true, 1.2);          // getting back up
+  else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.5);  // quick, not a long slide
+  else if(state==='dive'){
+    if(p.diveType==='catch') switchClip(p,'catch', true, 1.1);                 // high & direct -> jump and catch
+    else switchClip(p, (p.diveDir&&p.diveDir.x<0?'slideL':'slideR'), true, 1.4); // to a corner -> dive/lay out
+  }
+  else if(state==='fall') switchClip(p,'fall', true, 1.1);          // knocked down
+  else if(state==='getup')switchClip(p,'getup',true, 1.3);          // getting back up
   p.mixer.update(dt);
 }
 
@@ -1225,8 +1228,8 @@ function resolveTackles(){
     if(s.slide<=0 || (s.fall||0)>0 || s.sentOff) return;
     players.forEach(o=>{
       if(o.team===s.team || (o.fall||0)>0 || o.sentOff) return;
-      if(s.pos.distanceTo(o.pos) > 1.7) return;
-      o.fall=1.1; o.vel.set(0,0,0);              // opponent falls
+      if(s.pos.distanceTo(o.pos) > 2.4) return;   // reach matched to the bigger players
+      o.fall=1.1; o.vel.set(0,0,0);              // opponent falls (knock-down clip)
       const hadBall = (owner===o || ball.position.distanceTo(o.pos)<3);
       const foul = Math.random() < (hadBall?0.3:0.6);   // mistimed tackles foul more
       if(foul){
@@ -1448,13 +1451,19 @@ function stepPlayer(p,dt){
       const highBall = pred.y>2.2;
       const out = highBall ? Math.min(5.5, pred.t*2.6) : Math.min(1.4, pred.t*0.6);
       tz = gz + (p.team===0?out:-out);
-      // dive timed to be at full stretch WHEN the ball arrives — covers low, intermediate and high shots
-      if(pred.t<0.9 && Math.abs(pred.x-p.pos.x)>0.45 && (p.dive||0)<=0){
-        p.diveMax=Math.max(0.5, pred.t+0.26); p.dive=p.diveMax;
-        // remember which way the keeper springs so the ball meets his HANDS, not his feet
-        p.diveDir=new THREE.Vector3(pred.x-p.pos.x,0,(tz-p.pos.z)*0.3);
-        if(p.diveDir.lengthSq()<0.01) p.diveDir.set(0,0,p.team===0?1:-1);
-        p.diveDir.normalize();
+      // choose the save: JUMP-AND-CATCH when the ball is high & roughly at him; DIVE to the side for a
+      // ball heading toward a corner/post; a low ball right at him he just blocks standing.
+      if(pred.t<0.9 && (p.dive||0)<=0){
+        const lateral=Math.abs(pred.x-p.pos.x), high=pred.y>1.9;
+        if(high && lateral<GOAL_W*0.3){
+          p.diveMax=Math.max(0.5, pred.t+0.3); p.dive=p.diveMax; p.diveType='catch';
+          p.diveDir=new THREE.Vector3(0,0,p.team===0?1:-1);
+        }else if(lateral>0.6){
+          p.diveMax=Math.max(0.45, pred.t+0.22); p.dive=p.diveMax; p.diveType='dive';
+          p.diveDir=new THREE.Vector3(pred.x-p.pos.x,0,(tz-p.pos.z)*0.3);
+          if(p.diveDir.lengthSq()<0.01) p.diveDir.set(0,0,p.team===0?1:-1);
+          p.diveDir.normalize();
+        }
       }
     }
     // sweeper-keeper: now and then rush OUT to cut a counter — a loose ball or a rival carrier
@@ -1630,7 +1639,7 @@ function stepPlayer(p,dt){
   // speed
   let spd = p.gk?9.5:(isCtrl?(sprint?16.0:11.8):(p.team===1?12.0:10.9));
   if(deadTimer>0) spd=Math.min(spd,5);      // relaxed jog while the ball is dead
-  if(p.slide>0) spd=18.0;
+  if(p.slide>0) spd=11.5;                   // a short, sharp slide — not a long one
   if(p.gk && p.gkReact) spd=Math.max(spd,21);    // keeper springs across to cover a shot / sweep
   if((p.dive||0)>0) spd=Math.max(spd,28);   // keeper dive lunge (sharper reflexes)
   if(isCtrl && pressTimer>0) spd=Math.max(spd,18);   // press charge
@@ -1703,8 +1712,8 @@ function stepPlayer(p,dt){
   if(p.slide>0) state='slide';            // real slide-tackle clip handles the low lay-out
   else if((p.dive||0)>0) state='dive';    // real keeper leap+catch clip
   else if((p.kickTrig||0)>0) state='kick';
-  else if(p.speed>5.5) state='run';
-  else if(p.speed>0.8) state='walk';
+  else if(p.speed>4.3) state='run';            // break into a run sooner (quicker steps)
+  else if(p.speed>0.7) state='walk';
   else state='idle';
   driveAnim(p, state, p.speed, dt);
   m.userData.ring.visible=(p===ctrlPlayer());
@@ -1714,9 +1723,9 @@ function stepPlayer(p,dt){
 function separatePlayers(){
   const minD=P_R*2.1;                                  // body spacing matched to the bigger players
   for(let i=0;i<players.length;i++){
-    const a=players[i]; if(a.sentOff||(a.fall||0)>0||(a.dive||0)>0) continue;
+    const a=players[i]; if(a.sentOff||(a.fall||0)>0||(a.dive||0)>0||a.slide>0) continue;  // a slider can reach the man
     for(let j=i+1;j<players.length;j++){
-      const b=players[j]; if(b.sentOff||(b.fall||0)>0||(b.dive||0)>0) continue;
+      const b=players[j]; if(b.sentOff||(b.fall||0)>0||(b.dive||0)>0||b.slide>0) continue;
       let dx=a.pos.x-b.pos.x, dz=a.pos.z-b.pos.z; const d=Math.hypot(dx,dz);
       if(d<minD && d>1e-4){
         const overlap=minD-d; dx/=d; dz/=d;
