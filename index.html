@@ -181,7 +181,7 @@ import { GLTFLoader } from './libs/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from './libs/jsm/utils/SkeletonUtils.js';
 let GLB_SCENE=null, GLB_CLIPS=null, RED_TEX=null;
 let __GLB_B64='';                             // artifact build injects the model here as base64 (decoded + parsed, no fetch)
-const MODEL_SCALE=1.85, MODEL_YAW=0;          // bigger players; model already faces +Z
+const MODEL_SCALE=2.35, MODEL_YAW=0;          // bigger players; model already faces +Z
 // make a RED-kit version of the (blue) base-colour texture by rotating its hue
 function buildRedTexture(root){
   let src=null; root.traverse(o=>{ if(o.isMesh && o.material && o.material.map && !src) src=o.material.map; });
@@ -199,7 +199,7 @@ function __startGame(){
 /* ============ constants ============ */
 const HALF_W = 42, HALF_L = 80;          // field x / z half-extents (bigger pitch)
 const GOAL_W = 17, GOAL_H = 4.6, GOAL_D = 2.2;
-const BALL_R = 0.34, P_R = 1.25;
+const BALL_R = 0.34, P_R = 1.5;
 const PLAYER_SCALE = 1.24;            // players a bit bigger
 const FOOT_LIFT = 0.05;               // lift so the shoes rest ON the grass (no sinking / levitating)
 const BOX_HALF_W = 23, BOX_DEPTH = 19;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
