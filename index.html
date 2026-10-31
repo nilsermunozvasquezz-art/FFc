@@ -180,6 +180,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from './libs/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from './libs/jsm/utils/SkeletonUtils.js';
 let GLB_SCENE=null, GLB_CLIPS=null, RED_TEX=null;
+let __GLB_B64='';                             // artifact build injects the model here as base64 (decoded + parsed, no fetch)
 const MODEL_SCALE=1.45, MODEL_YAW=0;          // fit the 1.7m model to the pitch; model already faces +Z
 // make a RED-kit version of the (blue) base-colour texture by rotating its hue
 function buildRedTexture(root){
@@ -2148,12 +2149,23 @@ requestAnimationFrame(loop);
 // ---- load the 3D player model, then build the game ----
 (function(){
   const ov=document.getElementById('loadov'), pct=document.getElementById('loadpct'), bar=document.getElementById('loadbar');
-  new GLTFLoader().load('./player.glb', (g)=>{
+  function onGLB(g){
     GLB_SCENE=g.scene; GLB_CLIPS=g.animations;
     try{ RED_TEX=buildRedTexture(GLB_SCENE); }catch(e){ console.warn('red tex',e); }
     try{ __startGame(); }catch(e){ console.error(e); if(ov) ov.innerHTML='<div style="color:#fff">Error al iniciar</div>'; return; }
     if(ov) ov.style.display='none';
-  }, (ev)=>{ if(ev.total && pct){ const p=Math.round(ev.loaded/ev.total*100); pct.textContent=p+'%'; if(bar) bar.style.width=p+'%'; } },
-     (err)=>{ console.error('GLB load failed', err); if(ov) ov.innerHTML='<div style="color:#fff;padding:20px;text-align:center">No se pudo cargar el modelo 3D.<br>'+(err&&err.message||'')+'</div>'; });
+  }
+  function onProg(ev){ if(ev && ev.total && pct){ const p=Math.round(ev.loaded/ev.total*100); pct.textContent=p+'%'; if(bar) bar.style.width=p+'%'; } }
+  function onErr(err){ console.error('GLB load failed', err); if(ov) ov.innerHTML='<div style="color:#fff;padding:20px;text-align:center">No se pudo cargar el modelo 3D.<br>'+(err&&err.message||'')+'</div>'; }
+  const loader=new GLTFLoader();
+  if(typeof __GLB_B64!=='undefined' && __GLB_B64){
+    // model inlined as base64 (artifact build): DECODE + PARSE — no fetch, so CSP can't block it
+    try{ if(pct) pct.textContent='…'; const bin=atob(__GLB_B64); const u8=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+      loader.parse(u8.buffer, '', onGLB, onErr);
+    }catch(e){ onErr(e); }
+  }else{
+    loader.load('./player.glb', onGLB, onProg, onErr);     // model as a separate file (repo / server build)
+  }
 })();
 </script>
