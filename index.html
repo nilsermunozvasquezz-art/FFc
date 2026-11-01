@@ -478,6 +478,12 @@ function makePlayer(shirt, shorts, skin){
 const CLIP={ run:'Running', walk:'Walking', idle:'Idle_9', kick:'Kick_a_Soccer_Ball',
   slideL:'slide_light', slideR:'slide_right', catch:'Leap_Right_and_Catch',
   fall:'Knock_Down_1', getup:'Stand_Up4', turn:'Walk_Turn_Right' };
+// play the WHOLE knock-down then the WHOLE stand-up (clip lengths 3.27s / 1.67s), so neither gets cut short.
+// the stand-up starts from lying on the back, exactly where the knock-down ends, so the two flow into one move.
+const FALL_TS=1.3, GETUP_TS=1.15;
+const FALL_DUR=3.267/FALL_TS + 0.05;      // ~2.56s  — full knock-down
+const GETUP_DUR=1.667/GETUP_TS + 0.05;    // ~1.50s  — full stand-up
+const DOWN_DUR=FALL_DUR+GETUP_DUR;        // total time a fouled player is on the ground
 function makeGlbPlayer(team, gk){
   const g=skeletonClone(GLB_SCENE);
   g.scale.setScalar(MODEL_SCALE * (gk?1.02:1));
@@ -523,8 +529,8 @@ function driveAnim(p, state, speed, dt){
     if(p.diveType==='catch') switchClip(p,'catch', true, 1.1);                 // high & direct -> jump and catch
     else switchClip(p, (p.diveDir&&p.diveDir.x<0?'slideL':'slideR'), true, 1.4); // to a corner -> dive/lay out
   }
-  else if(state==='fall') switchClip(p,'fall', true, 1.1);          // knocked down
-  else if(state==='getup')switchClip(p,'getup',true, 1.3);          // getting back up
+  else if(state==='fall') switchClip(p,'fall', true, FALL_TS);          // knocked down — plays the whole clip
+  else if(state==='getup')switchClip(p,'getup',true, GETUP_TS);         // stands back up from the same back-lying pose
   p.mixer.update(dt);
 }
 
@@ -608,6 +614,13 @@ const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.4,0.04),
   new THREE.MeshBasicMaterial({color:0xffd21a}));
 refCard.position.set(0.45,1.65,0.15); refCard.visible=false; ref.add(refCard);
 let cardTimer=0;
+// the referee RAISES his right arm (card in hand) while booking — find the arm bones once
+let refArm=null, refHand=null;
+ref.traverse(o=>{ const n=o.name.replace(':','');   // GLTFLoader strips the colon from mixamorig:RightArm
+                  if(n==='mixamorigRightArm') refArm=o;
+                  if(n==='mixamorigRightHand') refHand=o; });
+const _rq1=new THREE.Quaternion(), _rq2=new THREE.Quaternion(), _rqd=new THREE.Quaternion();
+const _rv1=new THREE.Vector3(), _rv2=new THREE.Vector3(), _rvf=new THREE.Vector3();
 
 /* assistant referees (linesmen) run the touchlines and flag offside */
 // bright yellow / red checkered flag cloth (the classic assistant's flag)
@@ -1243,7 +1256,7 @@ function resolveTackles(){
     players.forEach(o=>{
       if(o.team===s.team || (o.fall||0)>0 || o.sentOff) return;
       if(s.pos.distanceTo(o.pos) > 2.4) return;   // reach matched to the bigger players
-      o.fall=1.1; o.vel.set(0,0,0);              // opponent falls (knock-down clip)
+      o.fall=FALL_DUR; o.vel.set(0,0,0);         // opponent falls — the full knock-down plays out
       const hadBall = (owner===o || ball.position.distanceTo(o.pos)<3);
       const foul = Math.random() < (hadBall?0.3:0.6);   // mistimed tackles foul more
       if(foul){
@@ -1254,9 +1267,10 @@ function resolveTackles(){
           assignRoles();                                        // team reshuffles to cover the man down
           if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
         }
-        // let the ball run on a moment, then whistle the free kick to the fouled team
+        // quick whistle, then HOLD the restart while the fouled player's full fall + stand-up plays out,
+        // and only then let the free kick be taken by the team that was fouled.
         const ft=o.team, fx=o.pos.x, fz=o.pos.z;
-        scheduleRestart(1.3, 'TIRO LIBRE', ()=>awardSetPiece(ft, fx, fz, 'TIRO LIBRE'));
+        scheduleRestart(0.8, 'TIRO LIBRE', ()=>awardSetPiece(ft, fx, fz, 'TIRO LIBRE', null, DOWN_DUR-0.5));
         s.slide=0; s.slideCd=1.8;
         return;
       }
@@ -1389,7 +1403,7 @@ function stepPlayer(p,dt){
     const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
     driveAnim(p,'fall',0,dt);
     m.userData.ring.visible=(p===ctrlPlayer());
-    if(p.fall<=0) p.getupT=0.85;                  // once down, start getting up
+    if(p.fall<=0) p.getupT=GETUP_DUR;             // knock-down finished -> stand straight back up
     if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
     return;
   }
@@ -1839,10 +1853,12 @@ function playerBallInteraction(dt){
 }
 
 // generic set-piece: give the ball to `team` at (x,z), push opponents back, open a protected window
-function awardSetPiece(team, x, z, label, taker){
-  // formation phase first (teams get into position), then a window to take it
+function awardSetPiece(team, x, z, label, taker, formTime){
+  // formation phase first (teams get into position), then a window to take it.
+  // a foul passes a longer formTime so the fouled player's knock-down + stand-up fully plays before the kick.
+  const FT = formTime||2.4;
   players.forEach(q=>{ q.slide=0; });        // cancel any slide in progress so nobody dives into the taker
-  throwTeam=team; setPieceForm=2.4; throwTimer=2.4+2.4; setPieceLabel=label;
+  throwTeam=team; setPieceForm=FT; throwTimer=FT+2.4; setPieceLabel=label;
   const isThrow=(label==='SAQUE DE BANDA');
   if(isThrow){ x=(x>=0?1:-1)*(HALF_W+0.3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }   // ON the sideline, just outside
   else { x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }
@@ -2003,7 +2019,23 @@ function stepReferee(dt){
   if(booking) switchClip(refObj,'angry',false,1);
   else switchClip(refObj, spd>4?'run':'walk', false, spd>4?THREE.MathUtils.clamp(spd/9,0.8,1.5):THREE.MathUtils.clamp(spd/4+0.4,0.6,1.4));
   refMixer.update(dt);
-  if(cardTimer>0){ cardTimer-=dt; if(cardTimer<=0) refCard.visible=false; }
+  // while booking, override the right arm so it points UP (hand raised with the card), on top of the clip
+  if(booking && refArm && refHand){
+    ref.updateMatrixWorld(true);
+    refArm.getWorldPosition(_rv1); refHand.getWorldPosition(_rv2);
+    const curDir=_rv2.sub(_rv1).normalize();                 // current arm direction (world)
+    _rvf.set(Math.sin(ref.rotation.y),0,Math.cos(ref.rotation.y));
+    const target=_rv1.set(0,1,0).addScaledVector(_rvf,0.4).normalize();  // up and a bit to the front
+    _rqd.setFromUnitVectors(curDir, target);                 // world rotation to raise the arm
+    refArm.getWorldQuaternion(_rq1);
+    refArm.parent.getWorldQuaternion(_rq2);
+    refArm.quaternion.copy(_rq2.invert().multiply(_rqd.multiply(_rq1)));  // back into bone-local space
+    // sit the card in the raised hand
+    ref.updateMatrixWorld(true);
+    refHand.getWorldPosition(_rv2); ref.worldToLocal(_rv2);
+    refCard.position.copy(_rv2); refCard.position.y+=0.08; refCard.position.z+=0.12;  // card face just in front of the palm
+  }
+  if(cardTimer>0){ cardTimer-=dt; if(cardTimer<=0){ refCard.visible=false; refCard.position.set(0.45,1.65,0.15); } }
 }
 
 /* ============ camera (DLS side broadcast — goals left & right) ============ */
