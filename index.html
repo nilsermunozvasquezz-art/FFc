@@ -500,14 +500,15 @@ function setupPlayerAnim(p){
   p.mixer.update(Math.random()*2);   // desync the cycles so they don't move in lockstep
 }
 // switch a player's clip with a quick cross-fade (once=one-shot, clamped at the end)
-function switchClip(p, name, once, ts){
+function switchClip(p, name, once, ts, startAt){
   const to=p.act[name]; if(!to) return;
   if(p.curAnim!==name){
     const from=p.act[p.curAnim];
     to.enabled=true; to.setEffectiveWeight(1);
     to.setLoop(once?THREE.LoopOnce:THREE.LoopRepeat, once?1:Infinity);
-    to.clampWhenFinished=!!once; to.reset(); to.timeScale=ts||1; to.play();
-    if(from && from!==to){ from.play(); from.crossFadeTo(to, (once?0.12:0.28), false); }   // smoother blends for a natural look
+    to.clampWhenFinished=!!once; to.reset(); if(startAt) to.time=startAt;  // jump into the clip (e.g. start at the kick contact)
+    to.timeScale=ts||1; to.play();
+    if(from && from!==to){ from.play(); from.crossFadeTo(to, (once?0.1:0.28), false); }   // snappier blend into one-shots
     p.curAnim=name;
   } else { to.timeScale=ts||1; }
 }
@@ -516,7 +517,7 @@ function driveAnim(p, state, speed, dt){
   if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/10,0.75,1.6));
   else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/4.2,0.7,1.5));
   else if(state==='idle') switchClip(p,'idle',false, 1);
-  else if(state==='kick') switchClip(p,'kick',true, 1.35);
+  else if(state==='kick') switchClip(p,'kick',true, 1.4, 0.5);  // start at the leg-swing so the strike lands as the ball leaves
   else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.5);  // quick, not a long slide
   else if(state==='dive'){
     if(p.diveType==='catch') switchClip(p,'catch', true, 1.1);                 // high & direct -> jump and catch
@@ -1020,11 +1021,13 @@ function doAction(which, power){
         const tgt=directionalPassTarget(pl,jd);
         if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
         // nobody in that direction -> drive a firm ground ball exactly where you aim
+        pl.heading=Math.atan2(jd.x,jd.z); pl.faceLock=0.45;   // face the aim so the kick animation points the right way
         ballAtRightFoot(pl); ballVel.copy(jd).multiplyScalar(26+22*power); ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
       }
       const tgt=passTarget(pl);              // no aim -> pick the best open teammate forward
       if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
-      ballAtRightFoot(pl); ballVel.copy(aimDir(pl)).multiplyScalar(24+20*power); ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
+      { const ad=aimDir(pl); pl.heading=Math.atan2(ad.x,ad.z); pl.faceLock=0.45;   // face the aim so the kick animation points the right way
+        ballAtRightFoot(pl); ballVel.copy(ad).multiplyScalar(24+20*power); } ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
     }
     pl.kickCd=0.3; owner=null;
     if(which==='A'){            // DISPARO — the joystick aims which way / which corner
@@ -1037,10 +1040,12 @@ function doAction(which, power){
         const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
         dir=jd.multiplyScalar(1.0).add(toGoal.multiplyScalar(0.18)).normalize();  // mostly where you aim, tiny goal pull
       }else dir=toGoal;                      // no aim -> straight at goal (not random)
+      pl.heading=Math.atan2(dir.x,dir.z); pl.faceLock=0.45; ballAtRightFoot(pl);   // face + strike from the right foot
       ballVel.copy(dir).multiplyScalar(20+26*power); ballVel.y=2.5+2.5*power;
       showPower(pl, power);
     }else{                      // ELEVADO (lob/cross) — toward where the joystick points
       const dir=aimDir(pl);
+      pl.heading=Math.atan2(dir.x,dir.z); pl.faceLock=0.45; ballAtRightFoot(pl);   // face + strike from the right foot
       ballVel.copy(dir).multiplyScalar(11+13*power); ballVel.y=6+6*power;
       showPower(pl, power);
     }
@@ -1072,6 +1077,7 @@ function cpuTryKick(p){
     if(dir.lengthSq()<1) dir.set(0,0,-1);        // on the goal line the aim degenerates to zero -> never launch straight up
     dir.normalize();
     const pw=0.85+Math.random()*0.15;
+    p.heading=Math.atan2(dir.x,dir.z); p.faceLock=0.45; ballAtRightFoot(p);   // face the shot so the strike reads right
     ballVel.copy(dir).multiplyScalar(32+13*pw); ballVel.y=2.5+2.0*pw; p.kickCd=.6; owner=null; showPower(p,pw); return true;
   }
   // near the box: lay it off to the best-placed open mate, or keep driving at goal yourself
@@ -1140,6 +1146,8 @@ function passBall(p,target,power){
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
   const ps=0.95+0.15*power;                // strike strength: firm even on a quick tap, a bit more on a charge
+  // TURN to face the pass so the kick animation (and the right foot) point the right way
+  { const d=target.pos.clone().sub(p.pos).setY(0); if(d.lengthSq()>0.02){ p.heading=Math.atan2(d.x,d.z); p.faceLock=0.45; } }
   ballAtRightFoot(p);                      // the ball leaves from the right boot (not the body centre)
   // lead a moving receiver only MODESTLY — the ball slows as it rolls, so a big lead/hard pass overshoots
   const rough=ball.position.distanceTo(target.pos);
@@ -1658,16 +1666,20 @@ function stepPlayer(p,dt){
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   if(desired.lengthSq()>0.001){
     desired.normalize();
-    // ease the facing toward the movement direction (no robotic snapping)
-    const th=Math.atan2(desired.x,desired.z);
-    let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
-    // the player you control turns and accelerates a bit snappier for tighter handling
-    const turnRate=(p.dive||0)>0?22:(isCtrl?15:11), accel=isCtrl?12:9;
-    p.heading+=dh*Math.min(1,dt*turnRate);
+    // while a pass/kick facing is locked, DON'T rotate toward movement (keeps the strike pointing where the ball goes)
+    if((p.faceLock||0)<=0){
+      // ease the facing toward the movement direction (no robotic snapping)
+      const th=Math.atan2(desired.x,desired.z);
+      let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
+      const turnRate=(p.dive||0)>0?22:(isCtrl?15:11);
+      p.heading+=dh*Math.min(1,dt*turnRate);
+    }
+    const accel=isCtrl?12:9;                                     // control accelerates a bit snappier
     p.vel.lerp(desired.multiplyScalar(spd), Math.min(1,dt*accel));
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
   }
+  if((p.faceLock||0)>0) p.faceLock-=dt;                          // count down the facing lock
   p.pos.addScaledVector(p.vel,dt);
   p.pos.x=THREE.MathUtils.clamp(p.pos.x,-HALF_W-1,HALF_W+1);
   p.pos.z=THREE.MathUtils.clamp(p.pos.z,-HALF_L-3,HALF_L+3);
@@ -1710,7 +1722,7 @@ function stepPlayer(p,dt){
   m.position.set(p.pos.x,FOOT_LIFT,p.pos.z);
   m.rotation.set(0, p.heading+MODEL_YAW, 0);
   // detect a fresh kick (kickCd just jumped up) to fire the kick animation once
-  if((p.kickCd||0) > (p.prevKickCd||0)+0.05) p.kickTrig=0.42;
+  if((p.kickCd||0) > (p.prevKickCd||0)+0.05) p.kickTrig=0.5;
   p.prevKickCd=p.kickCd||0;
   if((p.kickTrig||0)>0) p.kickTrig-=dt;
 
