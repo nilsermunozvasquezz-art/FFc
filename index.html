@@ -687,7 +687,7 @@ function makeLinesman(sideSign){
   if(FLAG_SCENE){ const fm=FLAG_SCENE.clone(true);
     fm.traverse(o=>{ if(o.isMesh){ o.castShadow=false; o.frustumCulled=false; } });
     fm.scale.setScalar(0.42); flag.add(fm); }
-  flag.position.set(0,-0.3,0); flag.rotation.set(Math.PI,0,0);   // pole vertical, handle seated in the palm
+  flag.position.set(0,0.12,0); flag.rotation.set(0,0,0);   // the HANDLE/pole sits in the palm; cloth hangs at the side
   if(handBone) handBone.add(flag); else m.add(flag);
   return {mesh:m, mixer, act, curAnim:'idle', flag, armBone, handBone, side:sideSign, z:0, flagUp:0, heading:(sideSign>0?-Math.PI/2:Math.PI/2)};
 }
