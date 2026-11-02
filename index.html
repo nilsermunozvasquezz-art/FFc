@@ -674,22 +674,62 @@ function checkerFlagTex(){
   if('colorSpace' in t) t.colorSpace=THREE.SRGBColorSpace;
   return t;
 }
+// ---- linesman flag grip: the black handle passes through a CLOSED FIST ----
+// constants measured on the linesman model's right hand (hand-bone space: wrist at origin, fingers along +Y)
+const FLAG_SC=0.38;
+const HAND_N=new THREE.Vector3(-0.64,0,0.77).normalize();   // palm normal (palm side)
+const HAND_K=new THREE.Vector3(-0.77,0,-0.64).normalize();  // index -> pinky across the knuckles
+const FLAG_GRIP_PT=new THREE.Vector3(0.478,-0.80,0);       // a point on the flag's black handle, just below the knob (flag-model space)
+// a carry pose: a = diagonal tilt across the palm, b = outward tilt, g = which way the cloth hangs (degrees)
+function flagGrip(aDeg,bDeg,gDeg){
+  const V=THREE.Vector3, a=aDeg*Math.PI/180, b=bDeg*Math.PI/180, g=gDeg*Math.PI/180;
+  const d=new V(0,1,0).multiplyScalar(Math.cos(a)).addScaledVector(HAND_K,-Math.sin(a)).normalize();
+  d.multiplyScalar(Math.cos(b)).addScaledVector(HAND_N,-Math.sin(b)).normalize();
+  const out=HAND_N.clone().negate().multiplyScalar(Math.cos(g)).addScaledVector(HAND_K,Math.sin(g));
+  const c=out.addScaledVector(d,-out.dot(d)).normalize();
+  const xA=c.clone().negate(), zA=new V().crossVectors(xA,d);
+  const q=new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(xA,d,zA));
+  const G=new V(-0.004,0.095,-0.006).addScaledVector(HAND_N,0.03);          // centre of the closed fist
+  return {q, pos:G.sub(FLAG_GRIP_PT.clone().multiplyScalar(FLAG_SC).applyQuaternion(q))};
+}
+// curl the fingers into a fist around the handle (per-bone flexion axis)
+function makeFistCurl(B, hand){
+  const f=HAND_K.clone().negate(), hq=new THREE.Quaternion(); hand.getWorldQuaternion(hq);
+  const list=[], ang={1:1.25,2:1.55,3:1.0};
+  ['Index','Middle','Ring','Pinky'].forEach(fn=>{ for(let j=1;j<=3;j++){ const b=B['mixamorigRightHand'+fn+j]; if(!b) continue;
+    const bq=new THREE.Quaternion(); b.getWorldQuaternion(bq);
+    const ax=f.clone().applyQuaternion(hq).applyQuaternion(bq.invert()).normalize();
+    list.push({b, q:new THREE.Quaternion().setFromAxisAngle(ax,ang[j]), base:null, prev:null}); } });
+  return list;
+}
+// re-apply the fist after the mixer; if a clip doesn't drive a finger this frame, undo last frame's curl first (no build-up)
+function applyFist(list){
+  list.forEach(c=>{ const bq=c.b.quaternion;
+    if(c.prev && bq.equals(c.prev)) bq.copy(c.base);
+    c.base=bq.clone(); bq.multiply(c.q); c.prev=bq.clone(); });
+}
 function makeLinesman(sideSign){
   const m=makeGlbOfficial(LINES_SCENE);               // 3D assistant-referee model
   const mixer=new THREE.AnimationMixer(m);
   const act=officialActs(mixer, LINES_CLIPS, {walk:'Walking', run:'Running', idle:'Idle_9', protest:'Talk_with_Hands_Open', celebrate:'Victory_Fist_Pump'});
   if(act.idle) act.idle.play();
-  // find the right arm/hand bones so the flag is GRIPPED in the hand and can be raised for offside
-  let armBone=null, handBone=null;
-  m.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigRightArm')armBone=o; if(n==='mixamorigRightHand')handBone=o; });
-  // 3D checkered flag held BY THE POLE in the hand (parented to the hand bone so it moves/stays gripped)
+  // right arm/hand bones: the flag is GRIPPED in a closed fist and the arm can be raised for offside
+  const B={}; m.traverse(o=>{ B[o.name.replace(':','')]=o; });
+  const armBone=B['mixamorigRightArm']||null, handBone=B['mixamorigRightHand']||null;
   const flag=new THREE.Group();
   if(FLAG_SCENE){ const fm=FLAG_SCENE.clone(true);
     fm.traverse(o=>{ if(o.isMesh){ o.castShadow=false; o.frustumCulled=false; } });
-    fm.scale.setScalar(0.42); flag.add(fm); }
-  flag.position.set(0,0.12,0); flag.rotation.set(0,0,0);   // the HANDLE/pole sits in the palm; cloth hangs at the side
+    fm.scale.setScalar(FLAG_SC); flag.add(fm); }
+  // two carry poses: standing = pole straight down beside the leg (cloth hanging narrow),
+  // moving/signalling = held diagonally down-and-out with the cloth spread
+  const gripIdle=flagGrip(5,-10,60), gripMove=flagGrip(30,10,0);
+  flag.quaternion.copy(gripIdle.q); flag.position.copy(gripIdle.pos);
   if(handBone) handBone.add(flag); else m.add(flag);
-  return {mesh:m, mixer, act, curAnim:'idle', flag, armBone, handBone, side:sideSign, z:0, flagUp:0, heading:(sideSign>0?-Math.PI/2:Math.PI/2)};
+  mixer.update(0.01); m.updateMatrixWorld(true);                 // posed from the start (also behind the menu)
+  const curl = handBone ? makeFistCurl(B, handBone) : [];
+  applyFist(curl);
+  return {mesh:m, mixer, act, curAnim:'idle', flag, armBone, handBone, curl, gripIdle, gripMove, gripT:0,
+          side:sideSign, z:0, flagUp:0, heading:(sideSign>0?-Math.PI/2:Math.PI/2)};
 }
 const linesmen=[makeLinesman(1),makeLinesman(-1)];
 linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,0));
@@ -712,7 +752,12 @@ function stepLinesmen(dt){
     if(l.flagUp>0){ l.flagUp-=dt; switchClip(l,'idle',false,1); }
     else switchClip(l, run>3.5?'run':(run>0.5?'walk':'idle'), false, run>3.5?THREE.MathUtils.clamp(run/9,0.8,1.5):1);
     l.mixer.update(dt);
-    if(l.flagUp>0) raiseRightArm(l.mesh, l.armBone, l.handBone, 0.25);   // arm up -> the flag (gripped) rises with it
+    applyFist(l.curl);                                              // keep the fist closed on the handle
+    const moving = run>0.5 || l.flagUp>0;                           // standing: straight down; moving/signalling: diagonal out
+    l.gripT += ((moving?1:0) - l.gripT)*Math.min(1,dt*5);
+    l.flag.quaternion.slerpQuaternions(l.gripIdle.q, l.gripMove.q, l.gripT);
+    l.flag.position.lerpVectors(l.gripIdle.pos, l.gripMove.pos, l.gripT);
+    if(l.flagUp>0) raiseRightArm(l.mesh, l.armBone, l.handBone, 0.25);   // arm up -> the gripped flag rises with it
   });
 }
 
