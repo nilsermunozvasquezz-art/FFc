@@ -477,12 +477,12 @@ function makePlayer(shirt, shorts, skin){
 // map each game state to the animation clip NAME in the GLB (robust to clip order)
 const CLIP={ run:'Running', walk:'Walking', idle:'Idle_9', kick:'Kick_a_Soccer_Ball',
   slideL:'slide_light', slideR:'slide_right', catch:'Leap_Right_and_Catch',
-  fall:'Knock_Down_1', getup:'Stand_Up4', turn:'Walk_Turn_Right' };
-// play the WHOLE knock-down then the WHOLE stand-up (clip lengths 3.27s / 1.67s), so neither gets cut short.
-// the stand-up starts from lying on the back, exactly where the knock-down ends, so the two flow into one move.
-const FALL_TS=1.3, GETUP_TS=1.15;
-const FALL_DUR=3.267/FALL_TS + 0.05;      // ~2.56s  — full knock-down
-const GETUP_DUR=1.667/GETUP_TS + 0.05;    // ~1.50s  — full stand-up
+  fall:'Knock_Down_1', getup:'Stand_Up1', turn:'Walk_Turn_Right' };
+// Knock_Down_1 (3.27s) ends lying supine on the back; Stand_Up1 (8.27s) starts in that EXACT same
+// supine pose and rises to standing by ~80% — so the fall and the stand-up flow as one continuous move.
+const FALL_TS=1.3, GETUP_TS=2.5;
+const FALL_DUR=3.267/FALL_TS + 0.05;      // ~2.56s — the whole knock-down
+const GETUP_DUR=0.80*8.27/GETUP_TS + 0.05; // ~2.70s — lying -> fully standing (skip the standing-still tail)
 const DOWN_DUR=FALL_DUR+GETUP_DUR;        // total time a fouled player is on the ground
 function makeGlbPlayer(team, gk){
   const g=skeletonClone(GLB_SCENE);
