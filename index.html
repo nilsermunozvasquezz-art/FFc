@@ -194,7 +194,8 @@ import { GLTFLoader } from './libs/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from './libs/jsm/utils/SkeletonUtils.js';
 let GLB_SCENE=null, GLB_CLIPS=null, RED_TEX=null;
 let REF_SCENE=null, REF_CLIPS=null, LINES_SCENE=null, LINES_CLIPS=null;
-let __GLB_B64='', __REF_B64='', __LINES_B64='';   // artifact build injects each model here as base64 (parsed, no fetch)
+let CARD_SCENE=null, FLAG_SCENE=null;   // 3D referee card + linesman flag props
+let __GLB_B64='', __REF_B64='', __LINES_B64='', __CARD_B64='', __FLAG_B64='';   // artifact build injects each model here as base64 (parsed, no fetch)
 const MODEL_SCALE=2.62, MODEL_YAW=0;          // bigger players; model already faces +Z
 // make a RED-kit version of the (blue) base-colour texture by rotating its hue
 function buildRedTexture(root){
@@ -630,9 +631,12 @@ const refMixer = new THREE.AnimationMixer(ref);
 const refObj = { act:officialActs(refMixer, REF_CLIPS, {walk:'Walking', run:'Running', angry:'Angry_Stomp', warn:'Stand_Talking_Angry'}), curAnim:null, mixer:refMixer };
 if(refObj.act.walk){ refObj.act.walk.play(); refObj.curAnim='walk'; }
 const refPos=new THREE.Vector3(6,0,6);
-// card the referee raises on a foul (held up at head height; the model is scaled, so use model-space coords)
-const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.4,0.04),
-  new THREE.MeshBasicMaterial({color:0xffd21a}));
+// the referee raises a 3D card on a foul — the model comes in blank, the script tints it yellow / red
+const cardMat=new THREE.MeshStandardMaterial({color:0xffd21a, roughness:0.4, metalness:0.0,
+  emissive:0x6b5600, emissiveIntensity:0.5, side:THREE.DoubleSide});
+const refCard = CARD_SCENE ? CARD_SCENE.clone(true) : new THREE.Group();
+refCard.traverse(o=>{ if(o.isMesh){ o.material=cardMat; o.castShadow=false; o.frustumCulled=false; } });
+refCard.scale.setScalar(0.14);
 refCard.position.set(0.45,1.65,0.15); refCard.visible=false; ref.add(refCard);
 let cardTimer=0, cardSevere=false;
 // the referee RAISES his right arm (card in hand) while booking — find the arm bones once
@@ -661,13 +665,12 @@ function makeLinesman(sideSign){
   const mixer=new THREE.AnimationMixer(m);
   const act=officialActs(mixer, LINES_CLIPS, {walk:'Walking', run:'Running', idle:'Idle_9', protest:'Talk_with_Hands_Open', celebrate:'Victory_Fist_Pump'});
   if(act.idle) act.idle.play();
-  // checkered flag held at the right side (model-space; the group is scaled with the model)
+  // 3D checkered assistant's flag held at the right hand (model-space; scaled with the model)
   const flag=new THREE.Group();
-  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,0.95,6), new THREE.MeshBasicMaterial({color:0x1a1a1a}));
-  pole.position.y=0.47; flag.add(pole);
-  const cloth=new THREE.Mesh(new THREE.PlaneGeometry(.5,.32), new THREE.MeshBasicMaterial({map:checkerFlagTex(),side:THREE.DoubleSide}));
-  cloth.position.set(.27,0.82,0); flag.add(cloth);
-  flag.position.set(0.42,0.75,0.1);                   // right hand height
+  if(FLAG_SCENE){ const fm=FLAG_SCENE.clone(true);
+    fm.traverse(o=>{ if(o.isMesh){ o.castShadow=false; o.frustumCulled=false; } });
+    fm.scale.setScalar(0.5); fm.position.y=0.45; flag.add(fm); }
+  flag.position.set(0.42,0.55,0.12);                  // right hand height
   m.add(flag);
   return {mesh:m, mixer, act, curAnim:'idle', flag, side:sideSign, z:0, flagUp:0, heading:(sideSign>0?-Math.PI/2:Math.PI/2)};
 }
@@ -689,9 +692,9 @@ function stepLinesmen(dt){
     l.heading+=dh*Math.min(1,dt*7);
     l.mesh.rotation.set(0,l.heading,0);
     // offside: stand still and raise the flag; otherwise walk/run by pace
-    if(l.flagUp>0){ l.flagUp-=dt; switchClip(l,'idle',false,1); l.flag.rotation.set(0,0,2.0); l.flag.position.set(0.25,1.35,0.1); }
+    if(l.flagUp>0){ l.flagUp-=dt; switchClip(l,'idle',false,1); l.flag.rotation.set(0,0,-0.35); l.flag.position.set(0.40,1.45,0.14); }  // offside: flag raised up
     else { switchClip(l, run>3.5?'run':(run>0.5?'walk':'idle'), false, run>3.5?THREE.MathUtils.clamp(run/9,0.8,1.5):1);
-           l.flag.rotation.set(0,0,-0.25); l.flag.position.set(0.42,0.75,0.1); }
+           l.flag.rotation.set(0,0,0); l.flag.position.set(0.42,0.55,0.12); }   // carried at the side
     l.mixer.update(dt);
   });
 }
@@ -2030,7 +2033,9 @@ let foulSpot=new THREE.Vector3();
 function showCard(color){
   cardSevere = (color==='red');
   cardTimer = cardSevere?3.0:1.8;        // a red gets a longer, sterner talking-to
-  refCard.material.color.set(color==='red'?0xff2d2d:0xffd21a);
+  // the script decides the card colour (and a matching glow) at the moment it is shown
+  cardMat.color.set(cardSevere?0xe8201f:0xffd21a);
+  cardMat.emissive.set(cardSevere?0x5a0a08:0x6b5600);
   refCard.visible=true;
   foulSpot.copy(ball.position); foulSpot.y=0;
   const c=document.getElementById('card'), crd=document.getElementById('crd'), ctx=document.getElementById('ctx');
@@ -2283,13 +2288,16 @@ requestAnimationFrame(loop);
   (async function(){
     try{
       if(pct) pct.textContent='…';
-      const [pg,rg,lg]=await Promise.all([
+      const [pg,rg,lg,cg,fg]=await Promise.all([
         loadOne(__GLB_B64, './player.glb'),
         loadOne(__REF_B64, './ref.glb'),
-        loadOne(__LINES_B64, './lines.glb') ]);
+        loadOne(__LINES_B64, './lines.glb'),
+        loadOne(__CARD_B64, './card.glb'),
+        loadOne(__FLAG_B64, './flag.glb') ]);
       GLB_SCENE=pg.scene; GLB_CLIPS=pg.animations;
       REF_SCENE=rg.scene; REF_CLIPS=rg.animations;
       LINES_SCENE=lg.scene; LINES_CLIPS=lg.animations;
+      CARD_SCENE=cg.scene; FLAG_SCENE=fg.scene;
       try{ RED_TEX=buildRedTexture(GLB_SCENE); }catch(e){ console.warn('red tex',e); }
       __startGame();
       if(ov) ov.style.display='none';
