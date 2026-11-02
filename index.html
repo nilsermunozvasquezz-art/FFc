@@ -494,8 +494,9 @@ const CLIP={ run:'Running', walk:'Walking', idle:'Idle_9', kick:'Kick_a_Soccer_B
   turnL:'turnL', turnR:'turnR', protest:'protest', anger:'anger' };
 // Knock_Down_1 (3.27s) ends lying supine on the back; Stand_Up1 (8.27s) starts in that EXACT same
 // supine pose and rises to standing by ~80% — so the fall and the stand-up flow as one continuous move.
-const FALL_TS=1.3, GETUP_TS=2.5;
-const FALL_DUR=3.267/FALL_TS + 0.05;      // ~2.56s — the whole knock-down
+// skip the standing wind-up (first ~13% of the clip) and play faster, so the player drops QUICKLY when tackled
+const FALL_TS=2.2, FALL_START=0.42, GETUP_TS=2.5;
+const FALL_DUR=(3.267-FALL_START)/FALL_TS + 0.05;   // ~1.34s — a snappy knock-down (hits the ground in ~0.55s)
 const GETUP_DUR=0.80*8.27/GETUP_TS + 0.05; // ~2.70s — lying -> fully standing (skip the standing-still tail)
 const DOWN_DUR=FALL_DUR+GETUP_DUR;        // total time a fouled player is on the ground
 function makeGlbPlayer(team, gk){
@@ -545,7 +546,7 @@ function driveAnim(p, state, speed, dt){
     if(p.diveType==='catch') switchClip(p,'catch', true, 1.1);                 // high & direct -> jump and catch
     else switchClip(p, (p.diveDir&&p.diveDir.x<0?'slideL':'slideR'), true, 1.4); // to a corner -> dive/lay out
   }
-  else if(state==='fall') switchClip(p,'fall', true, FALL_TS);          // knocked down — plays the whole clip
+  else if(state==='fall') switchClip(p,'fall', true, FALL_TS, FALL_START);  // start past the stand-still so he drops at once
   else if(state==='getup')switchClip(p,'getup',true, GETUP_TS);         // stands back up from the same back-lying pose
   else if(state==='turnL')switchClip(p,'turnL',true, 1.5);             // sharp turn to the left (in place)
   else if(state==='turnR')switchClip(p,'turnR',true, 1.5);             // sharp turn to the right (in place)
@@ -1786,22 +1787,12 @@ function stepPlayer(p,dt){
   if((p.kickCd||0) > (p.prevKickCd||0)+0.05) p.kickTrig=0.5;
   p.prevKickCd=p.kickCd||0;
   if((p.kickTrig||0)>0) p.kickTrig-=dt;
-  // sharp change of facing while moving -> a quick pivot/turn clip (left or right)
-  const hPrev=(p.hPrev==null)?p.heading:p.hPrev;
-  let dH=p.heading-hPrev; while(dH>Math.PI)dH-=6.2832; while(dH<-Math.PI)dH+=6.2832;
-  const angVel=dH/Math.max(dt,0.001); p.hPrev=p.heading;
-  if((p.turnCd||0)>0) p.turnCd-=dt;
-  if((p.turnTrig||0)>0) p.turnTrig-=dt;
-  if(Math.abs(angVel)>3.4 && p.speed>3.2 && (p.turnCd||0)<=0 && (p.kickTrig||0)<=0 && p.slide<=0 && (p.dive||0)<=0){
-    p.turnTrig=0.36; p.turnSide=(dH<0?-1:1); p.turnCd=1.6;
-  }
   if((p.reactT||0)>0 && !(deadTimer>0||setPieceForm>0||throwTimer>0)) p.reactT=0;   // reactions only during the stoppage
 
   let state;
   if(p.slide>0) state='slide';            // real slide-tackle clip handles the low lay-out
   else if((p.dive||0)>0) state='dive';    // real keeper leap+catch clip
   else if((p.kickTrig||0)>0) state='kick';
-  else if((p.turnTrig||0)>0 && p.speed>2.2) state=(p.turnSide<0?'turnL':'turnR');
   else if(p.speed>3.6) state='run';            // break into a run sooner (quicker steps)
   else if(p.speed>0.6) state='walk';
   else state='idle';
