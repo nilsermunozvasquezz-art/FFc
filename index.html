@@ -182,7 +182,7 @@ import { clone as skeletonClone } from './libs/jsm/utils/SkeletonUtils.js';
 let GLB_SCENE=null, GLB_CLIPS=null, RED_TEX=null;
 let REF_SCENE=null, REF_CLIPS=null, LINES_SCENE=null, LINES_CLIPS=null;
 let __GLB_B64='', __REF_B64='', __LINES_B64='';   // artifact build injects each model here as base64 (parsed, no fetch)
-const MODEL_SCALE=2.35, MODEL_YAW=0;          // bigger players; model already faces +Z
+const MODEL_SCALE=2.62, MODEL_YAW=0;          // bigger players; model already faces +Z
 // make a RED-kit version of the (blue) base-colour texture by rotating its hue
 function buildRedTexture(root){
   let src=null; root.traverse(o=>{ if(o.isMesh && o.material && o.material.map && !src) src=o.material.map; });
@@ -198,12 +198,12 @@ function __startGame(){
 // THREE, GLTFLoader, skeletonClone, GLB_SCENE, GLB_CLIPS, RED_TEX come from the module scope above
 
 /* ============ constants ============ */
-const HALF_W = 42, HALF_L = 80;          // field x / z half-extents (bigger pitch)
-const GOAL_W = 17, GOAL_H = 4.6, GOAL_D = 2.2;
-const BALL_R = 0.34, P_R = 1.5;
+const HALF_W = 47, HALF_L = 89;          // field x / z half-extents (bigger pitch)
+const GOAL_W = 18.5, GOAL_H = 5.0, GOAL_D = 2.4;
+const BALL_R = 0.34, P_R = 1.62;
 const PLAYER_SCALE = 1.24;            // players a bit bigger
 const FOOT_LIFT = 0.05;               // lift so the shoes rest ON the grass (no sinking / levitating)
-const BOX_HALF_W = 23, BOX_DEPTH = 19;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
+const BOX_HALF_W = 25.5, BOX_DEPTH = 21;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
 function inOwnBox(p){ const gl=p.team===0?-HALF_L:HALF_L; return Math.abs(p.pos.x)<BOX_HALF_W && Math.abs(p.pos.z-gl)<BOX_DEPTH; }
 // ball physics (shared by stepBall AND the keeper's trajectory predictor so saves stay accurate)
 const GRAV = 27;                      // gravity on the ball
@@ -477,7 +477,8 @@ function makePlayer(shirt, shorts, skin){
 // map each game state to the animation clip NAME in the GLB (robust to clip order)
 const CLIP={ run:'Running', walk:'Walking', idle:'Idle_9', kick:'Kick_a_Soccer_Ball',
   slideL:'slide_light', slideR:'slide_right', catch:'Leap_Right_and_Catch',
-  fall:'Knock_Down_1', getup:'Stand_Up1', turn:'Walk_Turn_Right' };
+  fall:'Knock_Down_1', getup:'Stand_Up1', turn:'Walk_Turn_Right',
+  turnL:'turnL', turnR:'turnR', protest:'protest', anger:'anger' };
 // Knock_Down_1 (3.27s) ends lying supine on the back; Stand_Up1 (8.27s) starts in that EXACT same
 // supine pose and rises to standing by ~80% — so the fall and the stand-up flow as one continuous move.
 const FALL_TS=1.3, GETUP_TS=2.5;
@@ -514,14 +515,16 @@ function switchClip(p, name, once, ts, startAt){
     to.setLoop(once?THREE.LoopOnce:THREE.LoopRepeat, once?1:Infinity);
     to.clampWhenFinished=!!once; to.reset(); if(startAt) to.time=startAt;  // jump into the clip (e.g. start at the kick contact)
     to.timeScale=ts||1; to.play();
-    if(from && from!==to){ from.play(); from.crossFadeTo(to, (once?0.1:0.28), false); }   // snappier blend into one-shots
+    if(from && from!==to){ from.play(); from.crossFadeTo(to, (once?0.1:0.2), false); }   // snappier, more responsive blends
     p.curAnim=name;
   } else { to.timeScale=ts||1; }
 }
+// Walking / Running are in-place clips, so the leg cadence (timeScale) is matched to ground speed
+// to stop the feet sliding — faster movement = faster steps, and a near-stop barely shuffles.
 function driveAnim(p, state, speed, dt){
   if(!p.mixer) return;
-  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/10,0.75,1.6));
-  else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/4.2,0.7,1.5));
+  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/8.5,0.85,1.8));
+  else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/3.3,0.5,1.5));
   else if(state==='idle') switchClip(p,'idle',false, 1);
   else if(state==='kick') switchClip(p,'kick',true, 1.4, 0.5);  // start at the leg-swing so the strike lands as the ball leaves
   else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.5);  // quick, not a long slide
@@ -531,6 +534,10 @@ function driveAnim(p, state, speed, dt){
   }
   else if(state==='fall') switchClip(p,'fall', true, FALL_TS);          // knocked down — plays the whole clip
   else if(state==='getup')switchClip(p,'getup',true, GETUP_TS);         // stands back up from the same back-lying pose
+  else if(state==='turnL')switchClip(p,'turnL',true, 1.5);             // sharp turn to the left (in place)
+  else if(state==='turnR')switchClip(p,'turnR',true, 1.5);             // sharp turn to the right (in place)
+  else if(state==='protest')switchClip(p,'protest',false, 1.1);        // arms-out "¡¿qué?!" at the ref
+  else if(state==='anger')  switchClip(p,'anger',false, 1.1);          // annoyed / stomping
   p.mixer.update(dt);
 }
 
@@ -606,14 +613,14 @@ function resetPositions(kickTeam){
 /* referee */
 const ref = makeGlbOfficial(REF_SCENE);         // 3D referee model (yellow kit)
 const refMixer = new THREE.AnimationMixer(ref);
-const refObj = { act:officialActs(refMixer, REF_CLIPS, {walk:'Walking', run:'Running', angry:'Angry_Stomp'}), curAnim:null, mixer:refMixer };
+const refObj = { act:officialActs(refMixer, REF_CLIPS, {walk:'Walking', run:'Running', angry:'Angry_Stomp', warn:'Stand_Talking_Angry'}), curAnim:null, mixer:refMixer };
 if(refObj.act.walk){ refObj.act.walk.play(); refObj.curAnim='walk'; }
 const refPos=new THREE.Vector3(6,0,6);
 // card the referee raises on a foul (held up at head height; the model is scaled, so use model-space coords)
 const refCard=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.4,0.04),
   new THREE.MeshBasicMaterial({color:0xffd21a}));
 refCard.position.set(0.45,1.65,0.15); refCard.visible=false; ref.add(refCard);
-let cardTimer=0;
+let cardTimer=0, cardSevere=false;
 // the referee RAISES his right arm (card in hand) while booking — find the arm bones once
 let refArm=null, refHand=null;
 ref.traverse(o=>{ const n=o.name.replace(':','');   // GLTFLoader strips the colon from mixamorig:RightArm
@@ -638,7 +645,7 @@ function checkerFlagTex(){
 function makeLinesman(sideSign){
   const m=makeGlbOfficial(LINES_SCENE);               // 3D assistant-referee model
   const mixer=new THREE.AnimationMixer(m);
-  const act=officialActs(mixer, LINES_CLIPS, {walk:'Walking', run:'Running', idle:'Idle_9'});
+  const act=officialActs(mixer, LINES_CLIPS, {walk:'Walking', run:'Running', idle:'Idle_9', protest:'Talk_with_Hands_Open', celebrate:'Victory_Fist_Pump'});
   if(act.idle) act.idle.play();
   // checkered flag held at the right side (model-space; the group is scaled with the model)
   const flag=new THREE.Group();
@@ -729,9 +736,10 @@ function makePowerBar(){
     new THREE.MeshBasicMaterial({color:0x0a0a0a,transparent:true,opacity:.82}));
   const fill=new THREE.Mesh(new THREE.PlaneGeometry(1.5,0.2),
     new THREE.MeshBasicMaterial({color:0x33dd55}));
-  fill.position.z=0.01; g.add(bg,fill); g.visible=false; scene.add(g);
+  fill.position.z=0.01; g.add(bg,fill); g.visible=false; g.scale.setScalar(0.72); scene.add(g);
   return {g,fill};
 }
+const HEAD_Y = MODEL_SCALE*1.86;   // just above the player's head (model ~1.7m tall, scaled)
 function showPower(p,frac){
   if(!p||!p.pbar) return;
   frac=THREE.MathUtils.clamp(frac,0.08,1);
@@ -744,7 +752,7 @@ function updatePowerBars(dt){
   players.forEach(p=>{
     if(!p.pbar || (p.pbarT||0)<=0) return;
     p.pbarT-=dt;
-    p.pbar.g.position.set(p.pos.x,2.95,p.pos.z);
+    p.pbar.g.position.set(p.pos.x,HEAD_Y,p.pos.z);  // floats just over the head
     p.pbar.g.quaternion.copy(camera.quaternion);    // billboard to camera
     if(p.pbarT<=0) p.pbar.g.visible=false;
   });
@@ -1263,6 +1271,14 @@ function resolveTackles(){
         // referee books the tackler; free kick to the fouled team
         const red = Math.random()<0.17;
         showCard(red?'red':'yellow');
+        // players react during the stoppage: the tackler's side argues the call (reclamo),
+        // the fouled side is annoyed (molestarse) — only shows while a player is standing still
+        const reactDur = red?4.2:3.2;
+        s.reactT=reactDur; s.reactType='protest';
+        players.forEach(q=>{ if(q.sentOff||q===o||q===s||(q.fall||0)>0) return;
+          if(q.pos.distanceTo(o.pos)>22) return;
+          if(q.team===s.team){ q.reactT=reactDur*0.85; q.reactType='protest'; }
+          else { q.reactT=reactDur*0.85; q.reactType='anger'; } });
         if(red){ s.sentOff=true; if(owner===s) owner=null;      // red card -> off the pitch
           assignRoles();                                        // team reshuffles to cover the man down
           if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
@@ -1412,6 +1428,17 @@ function stepPlayer(p,dt){
     p.getupT-=dt; p.vel.multiplyScalar(0.7); p.pos.addScaledVector(p.vel,dt);
     const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
     driveAnim(p,'getup',0,dt);
+    m.userData.ring.visible=(p===ctrlPlayer());
+    if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
+    return;
+  }
+  // reacting to a foul during the stoppage: stand, face the ref and protest / show anger
+  if((p.reactT||0)>0 && (deadTimer>0||setPieceForm>0||throwTimer>0) && owner!==p){
+    p.reactT-=dt; p.vel.multiplyScalar(0.4); p.pos.addScaledVector(p.vel,dt);
+    const toRef=refPos.clone().sub(p.pos).setY(0);
+    if(toRef.lengthSq()>0.1) p.heading=Math.atan2(toRef.x,toRef.z);   // turn to argue with the referee
+    const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
+    driveAnim(p, (p.reactType==='anger'?'anger':'protest'), 0, dt);
     m.userData.ring.visible=(p===ctrlPlayer());
     if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
     return;
@@ -1739,13 +1766,24 @@ function stepPlayer(p,dt){
   if((p.kickCd||0) > (p.prevKickCd||0)+0.05) p.kickTrig=0.5;
   p.prevKickCd=p.kickCd||0;
   if((p.kickTrig||0)>0) p.kickTrig-=dt;
+  // sharp change of facing while moving -> a quick pivot/turn clip (left or right)
+  const hPrev=(p.hPrev==null)?p.heading:p.hPrev;
+  let dH=p.heading-hPrev; while(dH>Math.PI)dH-=6.2832; while(dH<-Math.PI)dH+=6.2832;
+  const angVel=dH/Math.max(dt,0.001); p.hPrev=p.heading;
+  if((p.turnCd||0)>0) p.turnCd-=dt;
+  if((p.turnTrig||0)>0) p.turnTrig-=dt;
+  if(Math.abs(angVel)>3.4 && p.speed>3.2 && (p.turnCd||0)<=0 && (p.kickTrig||0)<=0 && p.slide<=0 && (p.dive||0)<=0){
+    p.turnTrig=0.36; p.turnSide=(dH<0?-1:1); p.turnCd=1.6;
+  }
+  if((p.reactT||0)>0 && !(deadTimer>0||setPieceForm>0||throwTimer>0)) p.reactT=0;   // reactions only during the stoppage
 
   let state;
   if(p.slide>0) state='slide';            // real slide-tackle clip handles the low lay-out
   else if((p.dive||0)>0) state='dive';    // real keeper leap+catch clip
   else if((p.kickTrig||0)>0) state='kick';
-  else if(p.speed>4.3) state='run';            // break into a run sooner (quicker steps)
-  else if(p.speed>0.7) state='walk';
+  else if((p.turnTrig||0)>0 && p.speed>2.2) state=(p.turnSide<0?'turnL':'turnR');
+  else if(p.speed>3.6) state='run';            // break into a run sooner (quicker steps)
+  else if(p.speed>0.6) state='walk';
   else state='idle';
   driveAnim(p, state, p.speed, dt);
   m.userData.ring.visible=(p===ctrlPlayer());
@@ -1867,6 +1905,7 @@ function awardSetPiece(team, x, z, label, taker, formTime){
     players.forEach(p=>{if(p.team!==team||p.gk||p.sentOff)return; const d=p.pos.distanceTo(spot); if(d<rd){rd=d;rec=p;}}); }
   setPieceTaker=rec; setPieceGK=!!(rec&&rec.gk);
   if(rec){
+    rec.reactT=0;                                // the taker goes to the ball, doesn't stand arguing
     rec.pos.set(x,0,z); rec.vel.set(0,0,0);
     rec.heading = isThrow ? (x>0?-Math.PI/2:Math.PI/2) : (team===0?0:Math.PI);   // throw-in faces INTO the field
     if(isThrow){
@@ -1978,7 +2017,8 @@ function doGoal(team){
 
 let foulSpot=new THREE.Vector3();
 function showCard(color){
-  cardTimer=1.8;
+  cardSevere = (color==='red');
+  cardTimer = cardSevere?3.0:1.8;        // a red gets a longer, sterner talking-to
   refCard.material.color.set(color==='red'?0xff2d2d:0xffd21a);
   refCard.visible=true;
   foulSpot.copy(ball.position); foulSpot.y=0;
@@ -2016,8 +2056,9 @@ function stepReferee(dt){
   if(faceAt.lengthSq()>0.02) ref.rotation.y=Math.atan2(faceAt.x,faceAt.z);
   // drive the referee's 3D animation: angry stomp while booking, else run/walk by pace
   const spd=refVel.length();
-  if(booking) switchClip(refObj,'angry',false,1);
-  else switchClip(refObj, spd>4?'run':'walk', false, spd>4?THREE.MathUtils.clamp(spd/9,0.8,1.5):THREE.MathUtils.clamp(spd/4+0.4,0.6,1.4));
+  // a serious (red) foul gets the stern "calling to attention" talk; a yellow just the angry stomp
+  if(booking) switchClip(refObj, (cardSevere && refObj.act.warn)?'warn':'angry', false, 1);
+  else switchClip(refObj, spd>4?'run':'walk', false, spd>4?THREE.MathUtils.clamp(spd/8.5,0.85,1.6):THREE.MathUtils.clamp(spd/3.4+0.3,0.55,1.5));
   refMixer.update(dt);
   // while booking, override the right arm so it points UP (hand raised with the card), on top of the clip
   if(booking && refArm && refHand){
