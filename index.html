@@ -586,7 +586,7 @@ function setupPlayerAnim(p){
   p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigSpine1') p.spine=o;
     if(n==='mixamorigLeftFoot') p.footL=o; if(n==='mixamorigRightFoot') p.footR=o;
     if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o; });   // real boots / gloves   // for the running lean
-  for(const n in GK) if(/Penalty|Scissor|Soccer_Pass|Header|Offensive|Placing|Dribble|Throw_In|Header_Soccerball/.test(n)) p.act['pk:'+n]=p.mixer.clipAction(GK[n].clip);
+  for(const n in GK) if(/Penalty|Scissor|Soccer_Pass|Header|Offensive|Placing|Dribble|Throw_In|Header_Soccerball|Running_/.test(n)) p.act['pk:'+n]=p.mixer.clipAction(GK[n].clip);
   p.readyClip = p.act['pk:Offensive_Idle'] ? (Math.random()<0.5?'pk:Offensive_Idle':'pk:Offensive_Idle_1') : null;   // set, waiting for the play   // penalty kicks + bicycle kicks for everyone
   if(p.gk){ for(const n in GK) p.act['gk:'+n]=p.mixer.clipAction(GK[n].clip);
     p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o;
@@ -611,7 +611,13 @@ function switchClip(p, name, once, ts, startAt){
 // to stop the feet sliding — faster movement = faster steps, and a near-stop barely shuffles.
 function driveAnim(p, state, speed, dt){
   if(!p.mixer) return;
-  if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/10.5,0.85,1.8));
+  if(state==='run'){
+    const RUNS=['run','pk:Running_3','pk:Running_4'];
+    if(!RUNS.includes(p.curAnim) || !p.runClip || (p.runSwapT=(p.runSwapT||0)-dt)<=0){
+      if(!RUNS.includes(p.curAnim) || !p.runClip || Math.random()<0.5){ const r=Math.random(); p.runClip = (!p.act['pk:Running_3']||r<0.5) ? 'run' : (r<0.75?'pk:Running_3':'pk:Running_4'); }
+      p.runSwapT=5+Math.random()*6; }
+    const nat = p.runClip==='run' ? 13.0 : 9.9;                      // measured natural ground speed of each clip (least foot slide)
+    switchClip(p,p.runClip,false,THREE.MathUtils.clamp(speed/nat,0.75,p.runClip==='run'?1.8:2.0)); }
   else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/3.3,0.5,1.5));
   else if(state==='idle') switchClip(p,'idle',false, 1);
   else if(state==='kick'){ if(p.kickAnim==='pass' && p.act['pk:Soccer_Pass']) switchClip(p,p.kickClip||'pk:Soccer_Pass',true,PK_TS);   // dedicated pass clip
@@ -622,8 +628,16 @@ function driveAnim(p, state, speed, dt){
   else if(state==='pk') switchClip(p,p.pkClip,true,p.pkTs||1);                    // penalty kick
   else if(state==='tinwait'){ holdClip(p,'pk:Throw_In',0.05,dt); return; }
   else if(state==='ready') switchClip(p,p.readyClip,false,1.0,Math.random()*8);      // on his toes, waiting for the restart
-  else if(state==='dribble'){ if(!p.dribClip || (p.curAnim!=='pk:Dribble'&&p.curAnim!=='pk:Dribble_1')) p.dribClip=Math.random()<0.5?'pk:Dribble':'pk:Dribble_1';
-    switchClip(p,p.dribClip,false,THREE.MathUtils.clamp(speed/7.5,0.8,2.6)); }                       // ball at his feet, cadence matched to the pace
+  else if(state==='dribble'){
+    const DR=['pk:Dribble','pk:Dribble_1'], FR=['pk:Running_1','pk:Running_2'], fast=p.act['pk:Running_1'] && speed>(FR.includes(p.dribClip)?14:16);   // hysteresis: no flicker at the threshold
+    const inSet=DR.includes(p.curAnim)||FR.includes(p.curAnim);
+    if(!p.dribClip || !inSet || (fast && !FR.includes(p.dribClip) && !p.dribFastLock) || (!fast && FR.includes(p.dribClip) && !p.dribMix)){
+      if(fast) p.dribClip=FR[Math.random()<0.5?0:1];
+      else { p.dribMix = p.act['pk:Running_1'] && Math.random()<0.3;      // now and then he carries it with the quick run even at a normal pace
+             p.dribClip = p.dribMix ? FR[Math.random()<0.5?0:1] : DR[Math.random()<0.5?0:1]; }
+    }
+    const nat = FR.includes(p.dribClip) ? 13.2 : 7.5;
+    switchClip(p,p.dribClip,false,THREE.MathUtils.clamp(speed/nat, FR.includes(p.dribClip)?0.7:0.8, FR.includes(p.dribClip)?1.6:2.6)); }                       // ball at his feet, cadence matched to the pace
   else if(state==='side'){ const lat=p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading);       // + = toward his left (the model's +X)
     switchClip(p, lat>0?'gk:Goalkeeper_Sidestep':'gk:Goalkeeper_Sidestep_1', false, THREE.MathUtils.clamp(Math.abs(lat)/5.5,0.6,2.0)); }
   else if(state==='dance') switchClip(p,'dance',false,1.0);                        // goal celebration
