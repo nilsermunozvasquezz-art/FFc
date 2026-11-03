@@ -543,6 +543,13 @@ function playGk(p,name,ts,st){ const a=p.act[name]; if(!a) return;
   switchClip(p,name,true,ts,st); }
 // Pick the keeper's save from where the ball will cross him, and time it so the clip's CONTACT frame
 // lands exactly when the ball arrives (start offset + speed-up), then let the whole move play out.
+// the keeper gets his fingertips to it: pushed up and over the crossbar, out of play
+function gkTipOver(p){
+  const gz=p.team===0?-HALF_L:HALF_L, back=Math.sign(gz-p.pos.z)||-1;
+  ballVel.set(ballVel.x*0.25, 8.5+Math.random()*2.5, back*Math.max(5,Math.abs(ballVel.z)*0.3));
+  ball.position.y=Math.max(ball.position.y,GOAL_H-0.4);
+  p.gkTip=false; p.kickCd=0.8; owner=null; lastTouch=p.team; flashText('¡MANOTAZO!');
+}
 function gkStartSave(p, pred, tz, high, comingOut){
   if(!GK['Goalkeeper_Catch'] || !p.act['gk:Goalkeeper_Catch']) return false;
   const bv=new THREE.Vector3(-ballVel.x,0,-ballVel.z);                       // face the shot
@@ -551,7 +558,9 @@ function gkStartSave(p, pred, tz, high, comingOut){
   const lat=new THREE.Vector3(pred.x-p.pos.x,0,tz-p.pos.z).dot(sx), a=Math.abs(lat), s=lat>=0?1:-1;
   const pick=(A,B)=> (GK[A].m.side===s?A:B);
   let name, dive=false;
-  if(high) name = comingOut ? pick('Goalkeeper_Catch_6','Goalkeeper_Catch_7') : 'Goalkeeper_Catch_4';   // claim it in the air
+  p.gkTip=false;
+  if(high && !comingOut && pred.y>GOAL_H-1.5 && a<4.5 && GK['Goalkeeper_Miss'] && Math.random()<0.7){ name=pick('Goalkeeper_Miss','Goalkeeper_Miss_1'); p.gkTip=true; }   // fingertips it OVER the bar
+  else if(high) name = comingOut ? pick('Goalkeeper_Catch_6','Goalkeeper_Catch_7') : 'Goalkeeper_Catch_4';   // claim it in the air
   else if(a>5.0){ name=pick('Goalkeeper_Diving_Save','Goalkeeper_Diving_Save_1'); dive=true; }        // full-stretch dive
   else if(a>2.4){ name=pick('Goalkeeper_Diving_Save_2','Goalkeeper_Diving_Save_3'); dive=true; }      // dive across, forward
   else if(a>0.9)  name=pick('Goalkeeper_Catch','Goalkeeper_Catch_1');                                 // shuffle across and catch
@@ -577,7 +586,7 @@ function setupPlayerAnim(p){
   p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigSpine1') p.spine=o;
     if(n==='mixamorigLeftFoot') p.footL=o; if(n==='mixamorigRightFoot') p.footR=o;
     if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o; });   // real boots / gloves   // for the running lean
-  for(const n in GK) if(/Penalty|Scissor|Soccer_Pass|Header|Offensive|Placing/.test(n)) p.act['pk:'+n]=p.mixer.clipAction(GK[n].clip);
+  for(const n in GK) if(/Penalty|Scissor|Soccer_Pass|Header|Offensive|Placing|Dribble|Throw_In|Header_Soccerball/.test(n)) p.act['pk:'+n]=p.mixer.clipAction(GK[n].clip);
   p.readyClip = p.act['pk:Offensive_Idle'] ? (Math.random()<0.5?'pk:Offensive_Idle':'pk:Offensive_Idle_1') : null;   // set, waiting for the play   // penalty kicks + bicycle kicks for everyone
   if(p.gk){ for(const n in GK) p.act['gk:'+n]=p.mixer.clipAction(GK[n].clip);
     p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o;
@@ -611,7 +620,12 @@ function driveAnim(p, state, speed, dt){
   else if(state==='gkdir') switchClip(p,p.gkDirClip,true,1.0);
   else if(state==='gkkick') switchClip(p,p.gkKickClip,true,p.gkKickTs||1);        // keeper drop-kick
   else if(state==='pk') switchClip(p,p.pkClip,true,p.pkTs||1);                    // penalty kick
+  else if(state==='tinwait'){ holdClip(p,'pk:Throw_In',0.05,dt); return; }
   else if(state==='ready') switchClip(p,p.readyClip,false,1.0,Math.random()*8);      // on his toes, waiting for the restart
+  else if(state==='dribble'){ if(!p.dribClip || (p.curAnim!=='pk:Dribble'&&p.curAnim!=='pk:Dribble_1')) p.dribClip=Math.random()<0.5?'pk:Dribble':'pk:Dribble_1';
+    switchClip(p,p.dribClip,false,THREE.MathUtils.clamp(speed/7.2,0.8,2.0)); }                       // ball at his feet, cadence matched to the pace
+  else if(state==='side'){ const lat=p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading);       // + = toward his left (the model's +X)
+    switchClip(p, lat>0?'gk:Goalkeeper_Sidestep':'gk:Goalkeeper_Sidestep_1', false, THREE.MathUtils.clamp(Math.abs(lat)/5.5,0.6,2.0)); }
   else if(state==='dance') switchClip(p,'dance',false,1.0);                        // goal celebration
   else if(state==='cheer') switchClip(p,'cheer',false,1.0);
   else if(state==='chilena') switchClip(p,p.chClip,true,p.chTs||1);               // bicycle kick              // keeper organising the defence
@@ -628,7 +642,7 @@ function driveAnim(p, state, speed, dt){
   else if(state==='anger')  switchClip(p,'anger',false, 1.1);          // annoyed / stomping
   p.mixer.update(dt);
   // lean into the run (more at full pace), on top of the clip — a runner, not a jogger
-  if(p.spine && state==='run'){ const lean=THREE.MathUtils.clamp((speed-4)/11,0,1)*0.2;
+  if(p.spine && (state==='run'||state==='dribble')){ const lean=THREE.MathUtils.clamp((speed-4)/11,0,1)*0.2;
     if(lean>0.002){ const h=p.heading; _lnAx.set(Math.cos(h),0,-Math.sin(h));
       p.spine.parent.getWorldQuaternion(_lnPW); _lnQ.setFromAxisAngle(_lnAx,lean);
       _lnL.copy(_lnPW).invert().multiply(_lnQ).multiply(_lnPW); p.spine.quaternion.premultiply(_lnL); } }
@@ -1393,6 +1407,21 @@ function handsMid(p){ return p.handL.getWorldPosition(new THREE.Vector3()).add(p
 function holdClip(p,name,ct,dt){ const a=p.act[name]; if(!a) return;
   if(p.curAnim!==name) switchClip(p,name,true,1,ct); a.timeScale=0; a.time=ct; p.mixer.update(dt); }
 // quick free kick: the taker steps in and puts the ball down on the spot before he takes it
+const TIN_ROOT=[0.02,0.08,0.24,0.56,1.2,1.78,2.3,2.53,2.76,3.03,3.2,3.29], TIN_REL=1.55, TIN_SC=0.55;
+function tinRoot(t){ const i=Math.max(0,t/0.25), a=Math.min(TIN_ROOT.length-1,Math.floor(i)), b=Math.min(TIN_ROOT.length-1,a+1); return TIN_ROOT[a]+(TIN_ROOT[b]-TIN_ROOT[a])*(i-a); }
+const TIN_BACK = tinRoot(TIN_REL)*PLC_SC*TIN_SC;      // he starts this far behind the line so his feet reach it as he lets go
+function stepThrowIn(p,dt){
+  const c=p.tin;
+  if(!c.done && owner!==p){ p.tin=null; return false; }
+  c.ct+=dt*c.ts;
+  p.pos.copy(c.start).addScaledVector(c.fw, tinRoot(Math.min(c.ct,2.7))*PLC_SC*TIN_SC); p.vel.set(0,0,0); p.speed=0;
+  if(!c.done && c.ct>=TIN_REL){ c.done=true; p.tinGo=true; setPieceTaker=p; setPieceLabel='SAQUE DE BANDA'; owner=p; if(throwTimer<=0) throwTimer=0.1;
+    passBall(p,c.target,c.power); p.tinGo=false; }   // let go: the ball leaves both hands
+  if(c.ct>=2.6){ p.tin=null; return false; }
+  holdClip(p,c.clip,c.ct,dt);
+  const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0); m.userData.ring.visible=(p===ctrlPlayer());
+  return true;
+}
 function startPlaceFK(p, spot){
   const nm=Math.random()<0.5?'Goalkeeper_Placing_Ball_2':'Goalkeeper_Placing_Ball_3';
   if(!GK[nm]||!p.act['pk:'+nm]||!p.handL) return;
@@ -1546,9 +1575,19 @@ function aerialTry(p, forced, want){
   if(owner || pen || ball.position.y<1.2 || aerialBusy(p)) return false;
   const goalZ=(p.team===0?1:-1)*HALF_L, ownZ=-goalZ;
   const ownBall = (lastTouch===p.team);                                      // our own lofted pass coming in
-  let kind=null, name=null, hit=null;
+  let kind=null, name=null, hit=null, chest=null;
+  // CHEST CONTROL: a dropping ball arriving at chest height is cushioned down to his feet (AI, and your player receiving)
+  if((!want || want==='chestOnly') && GK['Header_Soccerball'] && p.act['pk:Header_Soccerball']){
+    const long=Math.random()<0.3;
+    const nm = long ? (Math.random()<0.5?'Header_Soccerball_2':'Header_Soccerball_3') : (Math.random()<0.5?'Header_Soccerball':'Header_Soccerball_1');
+    const cfg = long ? {hit:1.05, st:0.35, end:2.2} : {hit:0.72, st:0.25, end:1.9}, ts=1.3;
+    const c=ballAt((cfg.hit-cfg.st)/ts), hv=Math.hypot(ballVel.x,ballVel.z);
+    if(c.y>=2.3 && c.y<=3.9 && hv<38 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?2.8:2.2) && (ownBall || passReceiver===p || Math.random()<0.5)){
+      kind='chest'; name=nm; hit=c; chest=Object.assign({ts},cfg); }
+  }
+  if(!kind && want==='chestOnly') return false;
   // chilena window (ball around head height a bit closer in)
-  if(GK['Scissor_Kick'] && p.act['pk:Scissor_Kick']){
+  if(!kind && GK['Scissor_Kick'] && p.act['pk:Scissor_Kick']){
     const c=ballAt((GK['Scissor_Kick'].m.kick-CH_ST)/CH_TS);
     const ok = c.y>=2.9 && c.y<=5.6 && Math.abs(goalZ-c.z)<32 && Math.abs(c.x)<GOAL_W*1.1 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?3.2:2.6);
     if(ok && (want==='shot' ? Math.random()<0.45 : (!forced && Math.random()<0.3))){ kind='chilena'; hit=c; name=Math.random()<0.65?'Scissor_Kick':'Scissor_Kick_1'; }
@@ -1567,6 +1606,16 @@ function aerialTry(p, forced, want){
     }
   }
   if(!kind) return false;
+  if(chest){                                   // turn to face the incoming ball, get the chest under it
+    const face=new THREE.Vector3(-ballVel.x,0,-ballVel.z); if(face.lengthSq()<0.01) face.set(Math.sin(p.heading),0,Math.cos(p.heading)); face.normalize();
+    p.heading=Math.atan2(face.x,face.z);
+    p.chKind='chest'; p.chClip='pk:'+name; p.chTs=chest.ts; p.chT0=p.chT=(chest.end-chest.st)/chest.ts; p.chHit=p.chT-(chest.hit-chest.st)/chest.ts; p.chDone=false;
+    p.chGoalZ=(p.team===0?1:-1)*HALF_L; p.chFrom=p.pos.clone(); p.chTo=new THREE.Vector3(hit.x,0,hit.z).addScaledVector(face,-0.15);
+    p.faceLock=p.chT; p.chCd=1.0; p.vel.set(0,0,0);
+    playGk(p,p.chClip,chest.ts,chest.st);
+    if(p.team===0 && (p===ctrlPlayer() || passReceiver===p)) ctrl=players.indexOf(p);
+    return true;
+  }
   const mm=GK[name].m, isCh=(kind==='chilena'), ts=isCh?CH_TS:HD_TS, st=isCh?CH_ST:HD_ST;
   let face;
   if(isCh) face=new THREE.Vector3(p.pos.x, 0, p.pos.z-goalZ);                 // back to goal
@@ -1589,11 +1638,18 @@ function aerialYours(want){
 }
 function aerialCheck(){ if(owner||pen||ball.position.y<1.2) return; const me=ctrlPlayer();
   if(chilenaReq>0 && aerialYours(chilenaWant)) chilenaReq=0;
+  if(me && !aerialBusy(me) && (passReceiver===me || me.pos.distanceTo(ball.position)<6)) aerialTry(me,false,'chestOnly');   // first touch on the chest (headers stay on your button)
   players.forEach(p=>{ if(p.team===0 && (p===me || chilenaReq>0)) return; aerialTry(p,false,null); }); }   // you: on your button; the rest: by themselves
 function aerialStrike(p){
   const near = Math.hypot(ball.position.x-p.pos.x, ball.position.z-p.pos.z) < 3.4 && ball.position.y>2.0 && ball.position.y<7 && !owner;
   if(!near) return;                                                      // mistimed: he meets thin air
   const goalZ=p.chGoalZ;
+  if(p.chKind==='chest'){                       // killed on the chest: it drops just in front of him, under control
+    const fw=new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading));
+    ball.position.set(p.pos.x+fw.x*0.9, Math.min(Math.max(ball.position.y,2.3),3.6), p.pos.z+fw.z*0.9);
+    ballVel.set(fw.x*2.2, 1.2, fw.z*2.2); owner=null; lastTouch=p.team; p.kickCd=0; passReceiver=p; passSeekT=1.0;
+    return;
+  }
   if(p.chKind==='chilena' || p.chKind==='shot'){
     const ch=p.chKind==='chilena';
     const tx=(Math.random()<0.5?-1:1)*(1+Math.random()*(GOAL_W/2-2.2)), ty= ch ? 0.7+Math.random()*(GOAL_H-1.6) : 0.4+Math.random()*2.6;
@@ -1627,6 +1683,41 @@ function gkStartDropKick(p){
   return true;
 }
 
+// HAND THROW to a mate: steps into it and slings it overarm, released on the clip's release frame
+const THR_ROOT=[0.02,0.02,0.09,0.3,0.74,1.1,1.42,1.58,1.7,1.68,1.53,1.37,1.3,1.22,1.2,1.21];
+function thrRoot(t){ const i=Math.max(0,t/0.25), a=Math.min(THR_ROOT.length-1,Math.floor(i)), b=Math.min(THR_ROOT.length-1,a+1); return THR_ROOT[a]+(THR_ROOT[b]-THR_ROOT[a])*(i-a); }
+function gkStartThrow(p,tgt){
+  const right=Math.random()<0.75, nm=right?'Goalie_Throw':'Goalie_Throw_1';
+  if(!GK[nm]||!p.act['gk:'+nm]||!p.handR) return false;
+  const fw=tgt.pos.clone().sub(p.pos).setY(0); if(fw.lengthSq()<1) return false; fw.normalize();
+  p.heading=Math.atan2(fw.x,fw.z);
+  p.gkThr={clip:'gk:'+nm, ct:0.3, ts:1.35, rel:1.66, end:2.5, hand:right?p.handR:p.handL, tgt, fw, start:p.pos.clone(), done:false};
+  return true;
+}
+function stepGkThrow(p,dt){
+  const c=p.gkThr;
+  if(!c.done && owner!==p){ p.gkThr=null; return false; }          // lost it before the release
+  c.ct+=dt*c.ts;
+  const np=c.start.clone().addScaledVector(c.fw, thrRoot(c.ct)*2.4*0.8);
+  if(inOwnBox({team:p.team,pos:np})) p.pos.copy(np);               // the steps into the throw (never out of his area)
+  p.heading=Math.atan2(c.fw.x,c.fw.z); p.vel.set(0,0,0); p.speed=0;
+  if(!c.done && c.ct>=c.rel){
+    c.done=true;
+    const hp=c.hand.getWorldPosition(new THREE.Vector3()); ball.position.copy(hp); ball.position.y=Math.max(1.2,hp.y);
+    const t=c.tgt, aim=t.pos.clone().addScaledVector(t.vel||new THREE.Vector3(),0.4), v=aim.sub(ball.position).setY(0), d=v.length();
+    const T=THREE.MathUtils.clamp(d/24,0.45,1.35); v.normalize();
+    const kk=-Math.log(AIR_FR), corr=kk>1e-4?(1-Math.exp(-kk*T))/(kk*T):1;
+    ballVel.copy(v).multiplyScalar(d/T/corr); ballVel.y=(1.0-ball.position.y)/T+GRAV*T/2;
+    owner=null; p.kickCd=0.9; p.gkHold=0; lastTouch=p.team; lastKicker=p; p.prevKickCd=0.9;
+    passReceiver=t; passSeekT=T+0.4; if(p.team===0 && !t.gk) ctrl=players.indexOf(t);
+    showPower(p,0.7);
+  }
+  if(c.ct>=c.end){ p.gkThr=null; return false; }
+  holdClip(p,c.clip,c.ct,dt);
+  if(p.kickCd>0) p.kickCd-=dt;
+  const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0); m.userData.ring.visible=false;
+  return true;
+}
 // put the ball at the passer's RIGHT FOOT so the pass/kick leaves the right boot
 function ballAtRightFoot(p){ ballAtFoot(p, p.kickFootNow||'R', !!p.kickFootNow); }
 const _bf=new THREE.Vector3();
@@ -1675,12 +1766,20 @@ function stepPendingKick(p,dt){
 function passBall(p,target,power){
   power=(power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   // THROW-IN: the taker throws with his HANDS — the ball leaves from overhead and arcs onto the mate (no offside)
+  if(setPieceLabel==='SAQUE DE BANDA' && throwTimer>0 && setPieceTaker===p && !p.tinGo && p.act['pk:Throw_In'] && p.handL){
+    if(p.tin) return;                                  // already throwing
+    const nm=Math.random()<0.5?'pk:Throw_In':'pk:Throw_In_1';
+    const fw=new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading));
+    p.tin={clip:nm, ct:0, ts:1.4, target, power, fw, start:p.pos.clone()};
+    return;
+  }
   if(setPieceLabel==='SAQUE DE BANDA' && throwTimer>0 && setPieceTaker===p){
     const v2=target.pos.clone().sub(p.pos).setY(0);
     const d2=THREE.MathUtils.clamp(v2.length(),3,22); v2.normalize();   // a hand throw is short-to-medium, not a rocket
     const T=THREE.MathUtils.clamp(d2/15,0.5,0.95);
     // release from the hands but start the ball just INSIDE the line so it's in play (not instantly "out" again)
-    ball.position.set(THREE.MathUtils.clamp(p.pos.x,-HALF_W+0.4,HALF_W-0.4), 2.1, p.pos.z);
+    if(p.tinGo && p.handL){ const h=handsMid(p); ball.position.set(THREE.MathUtils.clamp(h.x,-HALF_W+0.4,HALF_W-0.4), Math.max(1.6,h.y), h.z); }   // from his hands
+    else ball.position.set(THREE.MathUtils.clamp(p.pos.x,-HALF_W+0.4,HALF_W-0.4), 2.1, p.pos.z);
     ballVel.copy(v2).multiplyScalar(d2/T); ballVel.y=GRAV*T/2;   // a hand-throw arc onto the mate
     p.kickCd=0.9; p.holdT=0; p.throwAnim=0.5; owner=null; throwTimer=0; setPieceForm=0;
     if(target&&target.team===p.team&&!target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(d2/13,0.6,1.8); }
@@ -1980,6 +2079,8 @@ function predictAtGoalLine(team){
 function stepPlayer(p,dt){
   if(p.plc && !(throwTimer>0 && p===setPieceTaker && owner===p)) p.plc=null;   // the restart is gone: stop placing
   if(p.plc && stepPlaceFK(p,dt)) return;      // putting the ball down for a free kick
+  if(p.gkThr && stepGkThrow(p,dt)) return;    // keeper throwing it out
+  if(p.tin && stepThrowIn(p,dt)) return;      // taking the throw-in
   if(p.pk2 && stepPendingKick(p,dt)) return;   // mid pass-swing: ball at his feet until the contact frame
   // movement target
   let desired=new THREE.Vector3();
@@ -2188,7 +2289,9 @@ function stepPlayer(p,dt){
         p.gkHold=(p.gkHold||0)+dt;
         desired.set(0,0,0);
         if(p.gkHold>0.6 && (p.dive||0)<=0 && !((p.gkKickT||0)>0)){       // gets up from the save first
-          if(!gkStartDropKick(p)){ gkPass(p); } p.gkHold=0; }
+          const bt=gkPickTarget(p), bd=bt?bt.pos.distanceTo(p.pos):99;
+          if(!(bt && bd<38 && Math.random()<0.75 && gkStartThrow(p,bt))){ if(!gkStartDropKick(p)){ gkPass(p); } }   // short/medium: throw it; long: drop-kick
+          p.gkHold=0; }
         if((p.gkKickT||0)>0 && !p.gkKicked){
           const fwdv=new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading));
           const ahead=p.pos.clone().addScaledVector(fwdv,2.2);
@@ -2408,7 +2511,8 @@ function stepPlayer(p,dt){
       const th=Math.atan2(tb.x,tb.z); let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
       p.heading+=dh*Math.min(1,dt*9); } } }
   p.pos.addScaledVector(p.vel,dt);
-  p.pos.x=THREE.MathUtils.clamp(p.pos.x,-HALF_W-1,HALF_W+1);
+  { const lim = (throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA') ? HALF_W+TIN_BACK+1 : HALF_W+1;
+    p.pos.x=THREE.MathUtils.clamp(p.pos.x,-lim,lim); }
   p.pos.z=THREE.MathUtils.clamp(p.pos.z,-HALF_L-3,HALF_L+3);
   // at kickoff NOBODY but the taker may cross midfield until the ball is played; the defending
   // team also stays outside the centre circle
@@ -2467,6 +2571,9 @@ function stepPlayer(p,dt){
   else if((p.pkT||0)>0 && p.pkClip) state='pk';
   else if((p.gkDir||0)>0 && p.gkDirClip && p.speed<2) state='gkdir';
   else if((p.kickTrig||0)>0) state='kick';
+  else if(owner===p && throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA' && p.act['pk:Throw_In']) state='tinwait';   // ball held in both hands, ready to throw
+  else if(owner===p && !p.gk && p.speed>3.6 && p.act['pk:Dribble'] && ball.position.y<0.9) state='dribble';   // running WITH the ball
+  else if(p.gk && p.speed>0.7 && p.speed<11 && p.act['gk:Goalkeeper_Sidestep'] && Math.abs(p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading))>p.speed*0.6) state='side';   // shuffling across his goal, facing the play
   else if(p.readyClip && !p.gk && owner!==p && p.speed<1.4 && (throwTimer>0 || kickoffHold>0 || awaitKickoffPass)) state='ready';
   else if(p.speed>3.6) state='run';            // break into a run sooner (quicker steps)
   else if(p.speed>0.6) state='walk';
@@ -2507,7 +2614,7 @@ function playerBallInteraction(dt){
   // while a set-piece or kickoff is being HELD (not yet taken), the taker keeps the ball on their
   // feet and NOBODY can snatch it — no nearest-grab, no keeper poach, no steal
   const spHold = (throwTimer>0 && setPieceTaker) ? setPieceTaker
-               : (awaitKickoffPass && kickoffTaker) ? kickoffTaker : null;
+               : (awaitKickoffPass && kickoffTaker) ? kickoffTaker : (players.find(q=>(q.tin&&!q.tin.done)||(q.gkThr&&!q.gkThr.done&&owner===q))||null);   // mid throw-in / keeper throw: nobody can take it off him
   if(spHold){
     owner=spHold; teamHasBall=!!(owner.team===0); lastTouch=owner.team;
   }else{
@@ -2529,6 +2636,7 @@ function playerBallInteraction(dt){
     let reach=2.7, maxH=3.0;
     if((p.dive||0)>0){ const down=p.gkClip && p.dive<p.gkFlyTo-0.25; reach=down?2.4:4.1; maxH=down?1.4:GOAL_H+0.3; }   // full stretch while flying
     else if(p.gkReact){ reach=3.4; maxH=GOAL_H; }        // set and reacting / sweeping: wide reach
+    if(p.gkTip && (p.dive||0)>0){ if(Math.hypot(dx,dz)<reach+0.4 && ball.position.y<GOAL_H+1.6 && ball.position.y>2.2) gkTipOver(p); return; }
     if(Math.hypot(dx,dz)<reach && ball.position.y<maxH) owner=p;
   });
   // DLS-style auto-switch: hand control to whichever blue outfielder has the ball, so your
@@ -2555,6 +2663,7 @@ function playerBallInteraction(dt){
     const reach = diving ? 1.35 : 0.7;
     const hy = diving ? 1.25 : 1.3;                 // ball height at the hands
     let want=owner.pos.clone().addScaledVector(dir,reach); want.y=hy;
+    if(owner.gkThr && owner.gkThr.ct>0.62){ want=owner.gkThr.hand.getWorldPosition(new THREE.Vector3()); want.y=Math.max(BALL_R,want.y); ball.position.copy(want); ballVel.set(0,0,0); return; }   // in the throwing hand
     if(owner.handL && owner.handR){                 // real hands: the ball sits between the gloves through every catch pose
       want=owner.handL.getWorldPosition(new THREE.Vector3()).add(owner.handR.getWorldPosition(new THREE.Vector3())).multiplyScalar(0.5);
       want.y=Math.max(BALL_R,want.y);
@@ -2568,13 +2677,15 @@ function playerBallInteraction(dt){
     return;
   }
   // throw-in taker holds the ball OVERHEAD in both hands until the throw is made
+  if(owner && owner.tin && !owner.tin.done && owner.handL){ const h=handsMid(owner); h.y=Math.max(1.6,h.y); ball.position.copy(h); ballVel.set(0,0,0); return; }   // ball in both hands through the throw
   if(owner && owner.plc){
     if(owner.plc.ct<PLC.B.down && owner.handL){ const h=handsMid(owner); h.y=Math.max(BALL_R,h.y); ball.position.copy(h); }
     else ball.position.set(owner.plc.spot.x,BALL_R,owner.plc.spot.z);
     ballVel.set(0,0,0); return;
   }
   if(owner && throwTimer>0 && owner===setPieceTaker && setPieceLabel==='SAQUE DE BANDA'){
-    const want=new THREE.Vector3(owner.pos.x, 2.1, owner.pos.z);
+    let want=new THREE.Vector3(owner.pos.x, 2.1, owner.pos.z);
+    if(owner.handL && owner.act['pk:Throw_In']){ want=handsMid(owner); want.y=Math.max(1.6,want.y); ball.position.copy(want); ballVel.set(0,0,0); return; }
     ball.position.lerp(want,Math.min(1,dt*20)); ballVel.set(0,0,0);
     return;
   }
@@ -2622,6 +2733,7 @@ function awardSetPiece(team, x, z, label, taker, formTime){
   players.forEach(q=>{ q.slide=0; });        // cancel any slide in progress so nobody dives into the taker
   throwTeam=team; setPieceForm=FT; throwTimer=FT+2.4; setPieceLabel=label;
   const isThrow=(label==='SAQUE DE BANDA');
+  players.forEach(q=>{ q.tin=null; });
   if(isThrow){ x=(x>=0?1:-1)*(HALF_W+0.3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }   // ON the sideline, just outside
   else { x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }
   let rec=taker||null;
@@ -2639,6 +2751,7 @@ function awardSetPiece(team, x, z, label, taker, formTime){
       ball.position.set(rec.pos.x+fwd.x*0.6,BALL_R,rec.pos.z+fwd.z*0.6); ballVel.set(0,0,0);
     }
     owner=rec; rec.holdT=0; rec.kickCd=0;
+    if(isThrow && rec.act['pk:Throw_In']) rec.pos.x += Math.sign(x)*TIN_BACK;   // a few steps back from the line for the throw
     if(team===0 && !rec.gk) ctrl=players.indexOf(rec);   // you take it (outfield) with PASE
     rec.plc=null;
     if(!rec.gk && (label==='TIRO LIBRE' || label==='FUERA DE JUEGO')) startPlaceFK(rec, new THREE.Vector3(x,0,z).addScaledVector(new THREE.Vector3(Math.sin(rec.heading),0,Math.cos(rec.heading)),0.6));
