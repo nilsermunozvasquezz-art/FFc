@@ -68,6 +68,11 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
   box-shadow:0 2px 10px rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.2)}
 
 /* ===== start / goal overlays ===== */
+/* penalty overlay + big flash text */
+#penov{position:fixed;left:50%;top:calc(66px + env(safe-area-inset-top,0px));transform:translateX(-50%);z-index:17;display:none;text-align:center;pointer-events:none;width:min(92vw,560px)}
+#penov .pt{font-size:28px;font-weight:900;letter-spacing:4px;color:#ffe14a;text-shadow:0 2px 12px #000}
+#penov .ph{display:inline-block;font-size:12px;font-weight:700;color:#fff;background:rgba(0,0,0,.5);padding:6px 14px;border-radius:14px;margin-top:4px}
+#flash{position:fixed;left:50%;top:36%;transform:translate(-50%,-50%);z-index:17;font-size:46px;font-weight:900;letter-spacing:3px;color:#fff;text-shadow:0 4px 18px #000,0 0 2px #000;display:none;pointer-events:none}
 /* main menu — the 3D pitch renders live behind it */
 #start{position:fixed;inset:0;z-index:20;display:grid;place-items:center;
   background:radial-gradient(circle at 50% 28%,rgba(4,26,11,.12),rgba(3,13,7,.74))}
@@ -152,6 +157,8 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 <div id="goal"><div class="g">¡GOOOL!</div></div>
 
 <div id="card"><div class="cwrap"><div class="crd" id="crd"></div><div class="ctx" id="ctx"></div></div></div>
+<div id="penov"><div class="pt">PENAL</div><div class="ph" id="penHint"></div></div>
+<div id="flash"></div>
 
 <div id="menu">
   <div class="panel" id="panelMain">
@@ -566,6 +573,7 @@ function setupPlayerAnim(p){
   p.mixer=new THREE.AnimationMixer(p.mesh);
   p.act={};
   for(const k in CLIP){ const clip=GLB_CLIPS.find(c=>c.name===CLIP[k]); if(clip) p.act[k]=p.mixer.clipAction(clip); }
+  for(const n in GK) if(/Penalty|Scissor|Soccer_Pass|Header/.test(n)) p.act['pk:'+n]=p.mixer.clipAction(GK[n].clip);   // penalty kicks + bicycle kicks for everyone
   if(p.gk){ for(const n in GK) p.act['gk:'+n]=p.mixer.clipAction(GK[n].clip);
     p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o;
       if(n==='mixamorigLeftFoot') p.footL=o; if(n==='mixamorigRightFoot') p.footR=o; }); }
@@ -592,10 +600,13 @@ function driveAnim(p, state, speed, dt){
   if(state==='run')       switchClip(p,'run', false, THREE.MathUtils.clamp(speed/8.5,0.85,1.8));
   else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/3.3,0.5,1.5));
   else if(state==='idle') switchClip(p,'idle',false, 1);
-  else if(state==='kick') switchClip(p,'kick',true, 1.4, 0.5);  // start at the leg-swing so the strike lands as the ball leaves
+  else if(state==='kick'){ if(p.kickAnim==='pass' && p.act['pk:Soccer_Pass']) switchClip(p,'pk:Soccer_Pass',true,1.3);   // dedicated pass clip
+    else switchClip(p,'kick',true, 1.4, 0.5); }  // shot: start at the leg-swing so the strike lands as the ball leaves
   else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.5);  // quick, not a long slide
   else if(state==='gkdir') switchClip(p,p.gkDirClip,true,1.0);
-  else if(state==='gkkick') switchClip(p,p.gkKickClip,true,p.gkKickTs||1);        // keeper drop-kick              // keeper organising the defence
+  else if(state==='gkkick') switchClip(p,p.gkKickClip,true,p.gkKickTs||1);        // keeper drop-kick
+  else if(state==='pk') switchClip(p,p.pkClip,true,p.pkTs||1);                    // penalty kick
+  else if(state==='chilena') switchClip(p,p.chClip,true,p.chTs||1);               // bicycle kick              // keeper organising the defence
   else if(state==='dive'){
     if(p.gkClip && p.act[p.gkClip]) switchClip(p,p.gkClip,true,p.gkTs||1);  // keeper pack: dive / catch, timed to the ball
     else if(p.diveType==='catch') switchClip(p,'catch', true, 1.1);                 // high & direct -> jump and catch
@@ -917,7 +928,7 @@ let sprint=false;
 function ctrlPlayer(){ return players[ctrl]; }
 
 function kickoff(team){
-  kickoffTeam=team;
+  kickoffTeam=team; pen=null; penReticle.visible=false; penBanner(false);
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
   ctrl=1; owner=null; kickoffHold=1.2; throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null;
@@ -925,7 +936,7 @@ function kickoff(team){
 }
 // post-goal restart: line both teams up, then kick off after a short pause
 function kickoffRestart(team){
-  kickoffTeam=team;
+  kickoffTeam=team; pen=null; penReticle.visible=false; penBanner(false);
   resetPositions(team);
   ball.position.set(0,BALL_R,0); ballVel.set(0,0,0);
   ctrl=1; owner=null; kickoffHold=1.3; throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null;  // brief line-up, then play
@@ -1146,6 +1157,8 @@ function doAction(which, power){
   if(!running||paused) return;
   power = (power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
   const p=ctrlPlayer();
+  if(pen && pen.phase!=='live'){ if(pen.team===0 && pen.phase==='aim' && which==='A') penStartKick(power); return; }   // penalty: DISPARO takes it
+  if((which==='A'||which==='B') && !owner && ball.position.y>1.2){ chilenaReq=0.6; chilenaWant=(which==='A'?'shot':'pass'); if(aerialTry(p,true,chilenaWant)){ chilenaReq=0; return; } }   // ball in the air: header / chilena
   // kickoff: if YOU are taking it, a button plays a short ball to a teammate to start the game.
   // Aim with the joystick (like your normal passes), else it goes to the nearest mate back/square.
   if(awaitKickoffPass && kickoffTaker && p===kickoffTaker){
@@ -1183,12 +1196,12 @@ function doAction(which, power){
         if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
         // nobody in that direction -> drive a firm ground ball exactly where you aim
         pl.heading=Math.atan2(jd.x,jd.z); pl.faceLock=0.45;   // face the aim so the kick animation points the right way
-        ballAtRightFoot(pl); ballVel.copy(jd).multiplyScalar(31+26*power); ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
+        ballAtRightFoot(pl); ballVel.copy(jd).multiplyScalar(31+26*power); ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); return;
       }
       const tgt=passTarget(pl);              // no aim -> pick the best open teammate forward
       if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
       { const ad=aimDir(pl); pl.heading=Math.atan2(ad.x,ad.z); pl.faceLock=0.45;   // face the aim so the kick animation points the right way
-        ballAtRightFoot(pl); ballVel.copy(ad).multiplyScalar(29+24*power); } ballVel.y=0.25; pl.kickCd=0.3; owner=null; showPower(pl,power); return;
+        ballAtRightFoot(pl); ballVel.copy(ad).multiplyScalar(29+24*power); } ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); return;
     }
     pl.kickCd=0.3; owner=null;
     if(which==='A'){            // DISPARO — the joystick aims which way / which corner
@@ -1295,6 +1308,169 @@ function gkPass(p, volley){
   const v=gkClearAim(p);
   ballVel.copy(v).multiplyScalar(volley?40:36); ballVel.y=volley?12:9; p.kickCd=0.9; p.holdT=0; owner=null; showPower(p,1);
 }
+/* ===================== PENALTIES & BICYCLE KICKS ===================== */
+let pen=null;                       // active penalty (null when none)
+let chilenaReq=0, chilenaWant='shot';   // you tapped DISPARO/PASE with the ball up in the air near your player
+const PEN_DIST=14;                  // penalty spot distance from the goal line (scaled to our box)
+const penReticle=(function(){ const g=new THREE.Group();
+  const ring=new THREE.Mesh(new THREE.RingGeometry(0.55,0.78,36), new THREE.MeshBasicMaterial({color:0xffe14a,transparent:true,opacity:0.95,side:THREE.DoubleSide,depthTest:false}));
+  const dot=new THREE.Mesh(new THREE.CircleGeometry(0.13,18), new THREE.MeshBasicMaterial({color:0xffe14a,side:THREE.DoubleSide,depthTest:false}));
+  ring.renderOrder=dot.renderOrder=999; g.add(ring,dot); g.visible=false; scene.add(g); return g; })();
+function penBanner(show,txt){ const o=document.getElementById('penov'); if(!o) return; o.style.display=show?'block':'none'; if(txt!=null) document.getElementById('penHint').textContent=txt; }
+function flashText(txt){ const f=document.getElementById('flash'); if(!f) return; f.textContent=txt; f.style.display='block'; clearTimeout(flashText._t); flashText._t=setTimeout(()=>{f.style.display='none';},1400); }
+// launch the ball so it crosses the goal line at (tx,ty) — iterated against the real ball physics (drag + gravity)
+function aimBallAt(tx,ty,tz,speed){
+  const from=ball.position, hd=new THREE.Vector3(tx-from.x,0,tz-from.z); const D=hd.length(); hd.normalize(); const T=Math.max(0.2,D/speed);
+  ballVel.copy(hd).multiplyScalar(speed); ballVel.y=(ty-from.y)/T+GRAV*T/2;
+  const defTeam = tz>0?1:0;
+  for(let i=0;i<6;i++){ const pr=predictAtGoalLine(defTeam); if(!pr) break; const k=0.85/Math.max(0.2,pr.t);
+    ballVel.y+=(ty-pr.y)*k; ballVel.x+=(tx-pr.x)*k; }
+}
+// a foul in the area: set up the penalty for `team` (the side TAKING it)
+function setupPenalty(team){
+  const dir=team===0?1:-1, G=dir*HALF_L, S=new THREE.Vector3(0,BALL_R,G-dir*PEN_DIST);
+  let kicker=null,kd=1e9; players.forEach(q=>{ if(q.team!==team||q.gk||q.sentOff) return; const d=q.pos.distanceTo(S); if(d<kd){kd=d;kicker=q;} });
+  const keeper=players.find(q=>q.team!==team&&q.gk&&!q.sentOff);
+  if(!kicker||!keeper){ awardSetPiece(team,0,S.z-dir*2,'TIRO LIBRE'); return; }
+  players.forEach(q=>{ q.slide=0; q.dive=0; q.gkClip=null; q.gkKickT=0; q.fall=0; q.getupT=0; q.reactT=0; q.chT=0; q.pkT=0; q.vel.set(0,0,0); q.kickCd=0; q.gkDir=0; });
+  pen={team,dir,G,S,kicker,keeper,phase:'setup',t:0,aimX:0,aimY:1.8,camT:1,spots:new Map(),power:0.7,kicked:false};
+  kicker.pos.set(S.x-0.9, 0, S.z-dir*6.4); kicker.heading=dir>0?0:Math.PI;
+  keeper.pos.set(0,0,G-dir*1.2); keeper.heading=dir>0?Math.PI:0;
+  const others=players.filter(q=>q!==kicker&&q!==keeper&&!q.sentOff);
+  others.forEach((q,i)=>{ const sd=(i%2)?1:-1, k=Math.floor(i/2); const x=sd*(11+k*3.3); const z=G-dir*(BOX_DEPTH+2+(k%2)*2.2);   // outside the area, off to the sides (clear view of goal)
+    q.pos.set(x,0,z); q.heading=dir>0?0:Math.PI; pen.spots.set(q,{x,z,h:q.heading}); });
+  refPos.set(GOAL_W/2+7,0,G-dir*(BOX_DEPTH-3));
+  owner=null; ball.position.copy(S); ballVel.set(0,0,0);
+  throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null; passReceiver=null;
+  if(team===0){ ctrl=players.indexOf(kicker); teamHasBall=true;
+    penBanner(true,'Apunta con el joystick · suelta DISPARO para patear (más potencia = menos precisión)'); }
+  else { teamHasBall=false; penBanner(true,'Penal para ROJO — ¡a ver si tu arquero lo tapa!');
+    pen.aimX=(Math.random()<0.5?-1:1)*(1.5+Math.random()*(GOAL_W/2-2.5)); pen.aimY=0.5+Math.random()*(GOAL_H-1.5); }
+}
+function penStartKick(power){
+  if(!pen||pen.phase!=='aim') return;
+  const k=pen.kicker, right=Math.random()<0.75;
+  const name = right ? (Math.random()<0.5?'Soccer_Penalty_Kick':'Soccer_Penalty_Kick_2') : (Math.random()<0.5?'Soccer_Penalty_Kick_1':'Soccer_Penalty_Kick_3');
+  if(!GK[name]||!k.act['pk:'+name]){ pen.hitT=0.4; pen.phase='run'; pen.t2=0; pen.power=power; return; }
+  const m=GK[name].m, ts=1.15;
+  pen.phase='run'; pen.t2=0; pen.power=power; pen.hitT=m.kick/ts;
+  const side = m.foot==='R' ? -1 : 1;                                  // stand off the ball on the side of the planted foot
+  const rx=new THREE.Vector3(Math.cos(k.heading),0,-Math.sin(k.heading));
+  pen.runFrom=k.pos.clone(); pen.runTo=pen.S.clone().setY(0).addScaledVector(rx,0.55*side).addScaledVector(new THREE.Vector3(0,0,pen.dir),-1.0);
+  k.pkClip='pk:'+name; k.pkTs=ts; k.pkT=m.d/ts; k.faceLock=k.pkT;
+  playGk(k,k.pkClip,ts,0);
+  penReticle.visible=false; penBanner(false);
+}
+function penStrike(){
+  const k=pen.kicker; pen.kicked=true;
+  const err=0.3+pen.power*1.15;                                            // harder = less precise
+  const tx=THREE.MathUtils.clamp(pen.aimX+(Math.random()-0.5)*2*err,-GOAL_W/2-2.5,GOAL_W/2+2.5);
+  const ty=Math.max(0.25, pen.aimY+(Math.random()-0.5)*1.5*err);
+  ball.position.copy(pen.S);
+  aimBallAt(tx,ty,pen.G+pen.dir*0.4, 36+20*pen.power);
+  k.kickCd=0.9; owner=null; lastTouch=pen.team; showPower(k,pen.power);
+  // the keeper has to GUESS: right way, wrong way, or stay up
+  const r=Math.random(), s=Math.sign(tx)||1;
+  const side = r<0.42 ? s : r<0.82 ? -s : 0;
+  pen.guess = { x: side ? side*(2.5+Math.random()*(GOAL_W/2-3)) : (Math.random()-0.5)*1.6, y: 0.5+Math.random()*2.8 };
+  pen.guessT=1.4; pen.phase='live'; pen.camT=2.4;
+}
+// hold the line-up still during the penalty (everyone idle, the kicker runs up and strikes)
+function penHold(q,dt){
+  if(q===pen.kicker && pen.phase==='run'){ const f=THREE.MathUtils.clamp(pen.t2/Math.max(0.05,pen.hitT),0,1); q.pos.lerpVectors(pen.runFrom,pen.runTo,f); }
+  else if(q===pen.keeper){ q.pos.set(0,0,pen.G-pen.dir*1.2); q.heading=pen.dir>0?Math.PI:0; }
+  else { const sp=pen.spots.get(q); if(sp){ q.pos.x+=(sp.x-q.pos.x)*Math.min(1,dt*4); q.pos.z+=(sp.z-q.pos.z)*Math.min(1,dt*4); q.heading=sp.h; } }
+  q.vel.set(0,0,0); q.speed=0;
+  const m=q.mesh; m.position.set(q.pos.x,FOOT_LIFT,q.pos.z); m.rotation.set(0,q.heading+MODEL_YAW,0);
+  driveAnim(q, (q===pen.kicker && pen.phase==='run' && q.pkClip) ? 'pk' : 'idle', 0, dt);
+  m.userData.ring.visible=(q===ctrlPlayer());
+}
+function stepPenalty(dt){
+  pen.t+=dt;
+  if(pen.phase==='setup' && pen.t>1.1){ pen.phase='aim'; pen.t=0; }
+  if(pen.phase==='aim'){
+    if(pen.team===0){
+      const sp=10;                                                         // aim speed across the goal
+      pen.aimX=THREE.MathUtils.clamp(pen.aimX - pen.dir*moveDir.x*sp*dt, -GOAL_W/2+0.4, GOAL_W/2-0.4);
+      pen.aimY=THREE.MathUtils.clamp(pen.aimY - moveDir.y*sp*0.6*dt, 0.35, GOAL_H-0.3);
+      if(pen.t>14) penStartKick(0.7);                                      // don't stall forever
+    } else if(pen.t>1.9) penStartKick(0.5+Math.random()*0.45);
+  }
+  if(pen.phase==='run'){ pen.t2+=dt; if(!pen.kicked && pen.t2>=pen.hitT){ penStrike(); } }
+  if(pen && pen.phase!=='live') players.forEach(q=>{ if(!q.sentOff) penHold(q,dt); });
+  else players.forEach(q=>stepPlayer(q,dt));                              // the strike frame hands over to live play
+  if(pen && pen.phase==='aim' && pen.team===0){ penReticle.visible=true; penReticle.position.set(pen.aimX,pen.aimY,pen.G-pen.dir*0.15); penReticle.quaternion.copy(camera.quaternion); }
+  else penReticle.visible=false;
+  stepReferee(dt); stepLinesmen(dt); updatePowerBars(dt);
+}
+function penaltyCamera(dt){
+  const S=pen.S, want=new THREE.Vector3(S.x, 7.4, S.z - pen.dir*24);        // well behind the kicker: the whole goal in view
+  camera.position.lerp(want, Math.min(1, dt*3.5)); camera.lookAt(0, 2.4, pen.G);
+}
+// ---- aerial play: a high ball reaching a player -> jumping HEADER (shot / pass / clearance) or a CHILENA ----
+const CH_TS=1.3, CH_ST=0.25, HD_TS=1.25, HD_ST=0.55;
+function ballAt(t){ let x=ball.position.x,y=ball.position.y,z=ball.position.z,vx=ballVel.x,vy=ballVel.y,vz=ballVel.z; const h=0.02;
+  for(let u=0;u<t;u+=h){ vy-=GRAV*h; x+=vx*h; y+=vy*h; z+=vz*h; const fr=Math.pow(AIR_FR,h); vx*=fr; vz*=fr; } return new THREE.Vector3(x,y,z); }
+function aerialBusy(p){ return p.gk||p.sentOff||(p.fall||0)>0||(p.getupT||0)>0||p.slide>0||(p.chT||0)>0||(p.chCd||0)>0||(p.kickCd||0)>0||(p.pkT||0)>0; }
+// want: null = the AI decides | 'shot' (DISPARO: header at goal, or a chilena) | 'pass' (PASE: header to a mate)
+function aerialTry(p, forced, want){
+  if(owner || pen || ball.position.y<1.2 || aerialBusy(p)) return false;
+  const goalZ=(p.team===0?1:-1)*HALF_L, ownZ=-goalZ;
+  const ownBall = (lastTouch===p.team);                                      // our own lofted pass coming in
+  let kind=null, name=null, hit=null;
+  // chilena window (ball around head height a bit closer in)
+  if(GK['Scissor_Kick'] && p.act['pk:Scissor_Kick']){
+    const c=ballAt((GK['Scissor_Kick'].m.kick-CH_ST)/CH_TS);
+    const ok = c.y>=2.9 && c.y<=5.6 && Math.abs(goalZ-c.z)<32 && Math.abs(c.x)<GOAL_W*1.1 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?3.2:2.6);
+    if(ok && (want==='shot' ? Math.random()<0.45 : (!forced && Math.random()<0.3))){ kind='chilena'; hit=c; name=Math.random()<0.65?'Scissor_Kick':'Scissor_Kick_1'; }
+  }
+  // jumping header window
+  if(!kind && GK['Soccer_Header'] && p.act['pk:Soccer_Header']){
+    const c=ballAt((GK['Soccer_Header'].m.kick-HD_ST)/HD_TS);
+    if(c.y>=3.3 && c.y<=6.3 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?3.0:2.4)){
+      const inRange = Math.abs(goalZ-c.z)<30 && Math.abs(c.x)<GOAL_W*1.2;
+      if(want) kind=want;
+      else if(inRange) kind='shot';
+      else if(ownBall) kind=null;                                           // our own long ball: let it drop to be controlled
+      else kind = Math.abs(ownZ-c.z)<34 ? 'clear' : 'pass';
+      if(kind && !forced && Math.random()>0.8){ p.chCd=0.6; kind=null; }
+      if(kind){ hit=c; name=Math.random()<0.6?'Soccer_Header':'Soccer_Header_1'; }
+    }
+  }
+  if(!kind) return false;
+  const mm=GK[name].m, isCh=(kind==='chilena'), ts=isCh?CH_TS:HD_TS, st=isCh?CH_ST:HD_ST;
+  let face;
+  if(isCh) face=new THREE.Vector3(p.pos.x, 0, p.pos.z-goalZ);                 // back to goal
+  else if(kind==='shot') face=new THREE.Vector3(-hit.x*0.5, 0, goalZ-hit.z);
+  else if(kind==='clear') face=new THREE.Vector3((Math.random()-0.5)*0.6, 0, Math.sign(goalZ));
+  else { p.chMate=bestPassTarget(p); face = p.chMate ? p.chMate.pos.clone().sub(hit).setY(0) : new THREE.Vector3(0,0,Math.sign(goalZ)); }
+  face.normalize(); p.heading=Math.atan2(face.x,face.z);
+  p.chKind=kind; p.chClip='pk:'+name; p.chTs=ts; p.chT0=p.chT=(mm.d-st)/ts; p.chHit=p.chT-(mm.kick-st)/ts; p.chDone=false; p.chGoalZ=goalZ;
+  p.chFrom=p.pos.clone(); p.chTo=new THREE.Vector3(hit.x,0,hit.z).addScaledVector(face, isCh?-0.7:-0.35);   // body under the ball so the boot / head meets it
+  p.faceLock=p.chT; p.chCd=isCh?4:1.5; p.vel.set(0,0,0);
+  playGk(p,p.chClip,ts,st);
+  return true;
+}
+function aerialCheck(){ if(owner||pen||ball.position.y<1.2) return; const me=ctrlPlayer();
+  players.forEach(p=>{ if(p===me){ if(chilenaReq>0 && aerialTry(p,true,chilenaWant)) chilenaReq=0; } else aerialTry(p,false,null); }); }   // you: on your button; the rest: by themselves
+function aerialStrike(p){
+  const near = Math.hypot(ball.position.x-p.pos.x, ball.position.z-p.pos.z) < 3.4 && ball.position.y>2.0 && ball.position.y<7 && !owner;
+  if(!near) return;                                                      // mistimed: he meets thin air
+  const goalZ=p.chGoalZ;
+  if(p.chKind==='chilena' || p.chKind==='shot'){
+    const ch=p.chKind==='chilena';
+    const tx=(Math.random()<0.5?-1:1)*(1+Math.random()*(GOAL_W/2-2.2)), ty= ch ? 0.7+Math.random()*(GOAL_H-1.6) : 0.4+Math.random()*2.6;
+    aimBallAt(tx,ty,goalZ, ch ? 40+Math.random()*8 : 30+Math.random()*7);
+    flashText(ch?'¡CHILENA!':'¡CABEZAZO!');
+  } else if(p.chKind==='pass' && p.chMate){
+    const m=p.chMate, to=m.pos.clone().sub(ball.position).setY(0); const d=to.length(); const T=THREE.MathUtils.clamp(d/22,0.45,1.4);
+    to.multiplyScalar(1/T); ballVel.set(to.x, (BALL_R-ball.position.y)/T+GRAV*T/2, to.z);
+    passReceiver=m; passSeekT=THREE.MathUtils.clamp(d/13,0.6,1.8); if(p.team===0) ctrl=players.indexOf(m);
+  } else {                                                               // clearance: head it high and away upfield
+    const v=new THREE.Vector3((Math.random()-0.5)*0.7,0,Math.sign(goalZ)).normalize(); ballVel.set(v.x*28,10,v.z*28);
+  }
+  owner=null; lastTouch=p.team; p.kickCd=0.9; showPower(p,1);
+}
 // Drop-kick after a catch (open play only, never a goal kick): face the target, short run-up holding the
 // ball, drop it onto the boot and volley it away on the clip's contact frame.
 function gkStartDropKick(p){
@@ -1374,7 +1550,7 @@ function passBall(p,target,power){
     const sp=THREE.MathUtils.clamp(dist*2.3, 19, 60)*ps;
     ballVel.copy(v).multiplyScalar(sp); ballVel.y=0.2;
   }
-  p.kickCd=0.9; p.holdT=0; owner=null;
+  p.kickCd=0.9; p.holdT=0; owner=null; p.kickKind='pass';
   // the intended receiver moves to meet the ball, so the pass actually connects (longer for longer passes)
   if(target && target.team===p.team && !target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(dist/13,0.6,1.8); }
   if(throwTimer>0) throwTimer=0;                            // a throw-in was taken
@@ -1463,7 +1639,9 @@ function resolveTackles(){
         // quick whistle, then HOLD the restart while the fouled player's full fall + stand-up plays out,
         // and only then let the free kick be taken by the team that was fouled.
         const ft=o.team, fx=o.pos.x, fz=o.pos.z;
-        scheduleRestart(0.8, 'TIRO LIBRE', ()=>awardSetPiece(ft, fx, fz, 'TIRO LIBRE', null, DOWN_DUR-0.5));
+        if(inOwnBox({team:s.team,pos:o.pos}) && GK['Soccer_Penalty_Kick'])                  // foul inside the area -> PENALTY
+          scheduleRestart(DOWN_DUR*0.7, 'PENAL', ()=>setupPenalty(ft));
+        else scheduleRestart(0.8, 'TIRO LIBRE', ()=>awardSetPiece(ft, fx, fz, 'TIRO LIBRE', null, DOWN_DUR-0.5));
         s.slide=0; s.slideCd=1.8;
         return;
       }
@@ -1609,6 +1787,17 @@ function stepPlayer(p,dt){
     if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
     return;
   }
+  // bicycle kick in progress: get under the ball, strike it overhead on the contact frame, land and get up
+  if((p.chT||0)>0){
+    p.chT-=dt; p.vel.set(0,0,0);
+    if(!p.chDone){ const f=THREE.MathUtils.clamp((p.chT0-p.chT)/Math.max(0.05,p.chT0-p.chHit),0,1); p.pos.lerpVectors(p.chFrom,p.chTo,f); }
+    if(!p.chDone && p.chT<=p.chHit){ p.chDone=true; aerialStrike(p); }
+    const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
+    driveAnim(p,'chilena',0,dt);
+    m.userData.ring.visible=(p===ctrlPlayer());
+    if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt; if((p.chCd||0)>0)p.chCd-=dt;
+    return;
+  }
   // reacting to a foul during the stoppage: stand, face the ref and protest / show anger
   if((p.reactT||0)>0 && (deadTimer>0||setPieceForm>0||throwTimer>0) && owner!==p){
     p.reactT-=dt; p.vel.multiplyScalar(0.4); p.pos.addScaledVector(p.vel,dt);
@@ -1673,6 +1862,7 @@ function stepPlayer(p,dt){
     let tz=gz;
     p.gkReact=false;
     const pred=predictAtGoalLine(p.team);
+    if(pen && pen.guess && pen.keeper===p && pen.guessT>0 && pred){ pred.x=pen.guess.x; pred.y=pen.guess.y; }   // penalty: he GUESSES
     const bspd=Math.hypot(ballVel.x,ballVel.z);
     const shot = pred && Math.abs(pred.x)<GOAL_W/2+5.5 && pred.y<GOAL_H+1.3
       && bspd>3.8 && !(owner&&owner.team===p.team);   // reads more shots, a bit wider
@@ -1918,6 +2108,7 @@ function stepPlayer(p,dt){
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   // keepers ARRIVE at their spot (ease off when close) instead of overshooting at full speed and
   // jittering on the line — not while diving, when the lunge must stay at full pace
+  if((p.pkT||0)>0) spd=0;                                   // follow-through after the penalty
   if(p.gk && (p.gkKickT||0)>0) spd = (!p.gkKicked && p.gkKickT>p.gkKickHit) ? p.gkKickRun : 0;   // drop-kick run-up pace, then planted
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(dl<0.25) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
@@ -1964,6 +2155,8 @@ function stepPlayer(p,dt){
   if(p.kickCd>0)p.kickCd-=dt;
   if((p.dive||0)>0){ p.dive-=dt; if(p.dive<=0) p.gkClip=null; }
   if((p.gkDir||0)>0) p.gkDir-=dt;
+  if((p.pkT||0)>0) p.pkT-=dt;
+  if((p.chCd||0)>0) p.chCd-=dt;
   if((p.gkKickT||0)>0){ p.gkKickT-=dt; if(!p.gkKicked && owner!==p) p.gkKickT=0; }   // lost it before the kick: abort
   if((p.throwAnim||0)>0)p.throwAnim-=dt;
   if((p.stealCd||0)>0)p.stealCd-=dt;
@@ -1981,7 +2174,8 @@ function stepPlayer(p,dt){
   m.position.set(p.pos.x,FOOT_LIFT,p.pos.z);
   m.rotation.set(0, p.heading+MODEL_YAW, 0);
   // detect a fresh kick (kickCd just jumped up) to fire the kick animation once
-  if((p.kickCd||0) > (p.prevKickCd||0)+0.05) p.kickTrig=0.5;
+  if((p.kickCd||0) > (p.prevKickCd||0)+0.05){ p.kickTrig=0.5; p.kickAnim=p.kickKind||'shot'; p.kickKind=null;
+    if(p.kickAnim==='pass' && p.act['pk:Soccer_Pass']) playGk(p,'pk:Soccer_Pass',1.3,0.37); }   // pass clip starts at the strike
   p.prevKickCd=p.kickCd||0;
   if((p.kickTrig||0)>0) p.kickTrig-=dt;
   if((p.reactT||0)>0 && !(deadTimer>0||setPieceForm>0||throwTimer>0)) p.reactT=0;   // reactions only during the stoppage
@@ -1990,6 +2184,7 @@ function stepPlayer(p,dt){
   if(p.slide>0) state='slide';            // real slide-tackle clip handles the low lay-out
   else if((p.dive||0)>0) state='dive';    // real keeper leap+catch clip
   else if((p.gkKickT||0)>0 && p.gkKickClip) state='gkkick';
+  else if((p.pkT||0)>0 && p.pkClip) state='pk';
   else if((p.gkDir||0)>0 && p.gkDirClip && p.speed<2) state='gkdir';
   else if((p.kickTrig||0)>0) state='kick';
   else if(p.speed>3.6) state='run';            // break into a run sooner (quicker steps)
@@ -2398,6 +2593,8 @@ function loop(now){
         updatePowerBars(dt); updateLandMarker();
       }
       stepReferee(dt); stepLinesmen(dt);
+    }else if(pen && pen.phase!=='live'){
+      stepPenalty(dt);                    // penalty line-up / aim / run-up
     }else{
       if(pressTimer>0)pressTimer-=dt;
       if(throwTimer>0){
@@ -2419,6 +2616,7 @@ function loop(now){
       }
       computeDefRoles();                 // assign press/cover/outlet by current positions (rotates each frame)
       players.forEach(p=>stepPlayer(p,dt));
+      aerialCheck();                     // high ball reaching a player -> header (shot/pass/clear) or chilena
       separatePlayers();
       resolveTackles();
       pressSteal();
@@ -2442,7 +2640,9 @@ function loop(now){
       updatePowerBars(dt);
       updateLandMarker();
     }
-    timeLeft-=rdt;
+    if(chilenaReq>0) chilenaReq-=rdt;
+    if(pen && pen.phase==='live'){ pen.camT-=dt; pen.guessT-=dt; if(pen.camT<=0){ pen=null; penReticle.visible=false; } }
+    if(!(pen && pen.phase!=='live')) timeLeft-=rdt;      // the clock stops while the penalty is set up
     if(timeLeft<=0){ timeLeft=0; running=false; endMatch(); }
     document.getElementById('tim').textContent=fmt(timeLeft);
   }
@@ -2451,7 +2651,8 @@ function loop(now){
     menuT+=rdt; const a=menuT*0.18;
     camera.position.set(Math.sin(a)*74, 40, Math.cos(a)*56 - 6);
     camera.lookAt(0,2,0);
-  } else stepCamera(dt);
+  } else if(pen && pen.camT>0) penaltyCamera(rdt);
+  else stepCamera(dt);
   updateButtons();
   drawMini();
   renderer.render(scene,camera);
