@@ -212,7 +212,25 @@ function buildRedTexture(root){
   let src=null; root.traverse(o=>{ if(o.isMesh && o.material && o.material.map && !src) src=o.material.map; });
   if(!src || !src.image) return null;
   const img=src.image, cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
-  const cx=cv.getContext('2d'); cx.filter='hue-rotate(145deg) saturate(1.35) brightness(1.02)'; cx.drawImage(img,0,0,cv.width,cv.height);
+  const cx=cv.getContext('2d'); cx.drawImage(img,0,0,cv.width,cv.height);
+  // recolour ONLY the blue kit (hue ~190-255) to red; skin, hair, boots and whites keep their own colours
+  const id=cx.getImageData(0,0,cv.width,cv.height), d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i]/255, g=d[i+1]/255, b=d[i+2]/255, mx=Math.max(r,g,b), mn=Math.min(r,g,b), c=mx-mn;
+    if(c<0.06 || mx<0.06) continue;                                  // greys / whites / blacks untouched
+    let h; if(mx===r) h=((g-b)/c)%6; else if(mx===g) h=(b-r)/c+2; else h=(r-g)/c+4; h*=60; if(h<0) h+=360;
+    const sat=c/mx; if(sat<0.18) continue;
+    let w = h<180||h>265 ? 0 : (h<192 ? (h-180)/12 : (h>253 ? (265-h)/12 : 1));   // soft edges so seams stay clean
+    if(w<=0) continue;
+    // blue -> red: rotate the hue by +145 deg and push saturation a little
+    const nh=(h+145)%360, ns=Math.min(1,sat*1.3), v=mx*1.02;
+    const C=v*ns, X=C*(1-Math.abs((nh/60)%2-1)), m=v-C; let rr,gg,bb;
+    if(nh<60){rr=C;gg=X;bb=0;} else if(nh<120){rr=X;gg=C;bb=0;} else if(nh<180){rr=0;gg=C;bb=X;} else if(nh<240){rr=0;gg=X;bb=C;} else if(nh<300){rr=X;gg=0;bb=C;} else {rr=C;gg=0;bb=X;}
+    d[i]  =Math.round(255*Math.min(1,(r*(1-w)+(rr+m)*w)));
+    d[i+1]=Math.round(255*Math.min(1,(g*(1-w)+(gg+m)*w)));
+    d[i+2]=Math.round(255*Math.min(1,(b*(1-w)+(bb+m)*w)));
+  }
+  cx.putImageData(id,0,0);
   const t=new THREE.CanvasTexture(cv);
   t.flipY=src.flipY; if('colorSpace' in src) t.colorSpace=src.colorSpace; t.wrapS=src.wrapS; t.wrapT=src.wrapT; t.needsUpdate=true;
   return t;
