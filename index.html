@@ -567,7 +567,8 @@ function setupPlayerAnim(p){
   p.act={};
   for(const k in CLIP){ const clip=GLB_CLIPS.find(c=>c.name===CLIP[k]); if(clip) p.act[k]=p.mixer.clipAction(clip); }
   if(p.gk){ for(const n in GK) p.act['gk:'+n]=p.mixer.clipAction(GK[n].clip);
-    p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o; }); }
+    p.mesh.traverse(o=>{ const n=o.name.replace(':',''); if(n==='mixamorigLeftHand') p.handL=o; if(n==='mixamorigRightHand') p.handR=o;
+      if(n==='mixamorigLeftFoot') p.footL=o; if(n==='mixamorigRightFoot') p.footR=o; }); }
   if(p.act.idle){ p.act.idle.play(); p.curAnim='idle'; }
   p.mixer.update(Math.random()*2);   // desync the cycles so they don't move in lockstep
 }
@@ -593,7 +594,8 @@ function driveAnim(p, state, speed, dt){
   else if(state==='idle') switchClip(p,'idle',false, 1);
   else if(state==='kick') switchClip(p,'kick',true, 1.4, 0.5);  // start at the leg-swing so the strike lands as the ball leaves
   else if(state==='slide')switchClip(p, (p.slideSide<0?'slideL':'slideR'), true, 1.5);  // quick, not a long slide
-  else if(state==='gkdir') switchClip(p,p.gkDirClip,true,1.0);              // keeper organising the defence
+  else if(state==='gkdir') switchClip(p,p.gkDirClip,true,1.0);
+  else if(state==='gkkick') switchClip(p,p.gkKickClip,true,p.gkKickTs||1);        // keeper drop-kick              // keeper organising the defence
   else if(state==='dive'){
     if(p.gkClip && p.act[p.gkClip]) switchClip(p,p.gkClip,true,p.gkTs||1);  // keeper pack: dive / catch, timed to the ball
     else if(p.diveType==='catch') switchClip(p,'catch', true, 1.1);                 // high & direct -> jump and catch
@@ -1247,7 +1249,7 @@ function cpuTryKick(p){
 
 /* Goalkeeper distributes: find an OPEN teammate FORWARD and wide, never across his own goal.
    If there's no safe option, clear it long and wide upfield — never a random ball into danger. */
-function gkPass(p){
+function gkPickTarget(p){
   const dir=p.team===0?1:-1;              // attack direction in Z
   const gz=p.team===0?-HALF_L:HALF_L;     // our own goal line
   let best=null,bb=-1e9;
@@ -1264,11 +1266,24 @@ function gkPass(p){
     if(p.team===0 && q===ctrlPlayer()) sc+=2;
     if(sc>bb){bb=sc;best=q;}
   });
-  if(best && bb>-2){
+  return (best && bb>-2) ? best : null;
+}
+// where a keeper with nobody safe to find clears it: long and WIDE upfield
+function gkClearAim(p){
+  const dir=p.team===0?1:-1;
+  const sideX=(Math.abs(p.pos.x)>1?Math.sign(p.pos.x):(Math.random()<0.5?-1:1))*(HALF_W*0.55);
+  return new THREE.Vector3(sideX-p.pos.x,0,dir*38).setY(0).normalize();
+}
+// volley=true: a drop-kick from the hands — the ball is already at his boot and always goes up in the air
+function gkPass(p, volley){
+  const dir=p.team===0?1:-1;
+  const best=gkPickTarget(p);
+  if(best){
     // keeper launches a FIRM pass to the open mate — driven low, with a little lift on a longer one
     const to=best.pos.clone().sub(p.pos).setY(0); const d=THREE.MathUtils.clamp(to.length(),4,72); to.normalize();
-    p.heading=Math.atan2(to.x,to.z); p.faceLock=0.45; ballAtRightFoot(p);
-    if(d>20){ const T=THREE.MathUtils.clamp(d/30,0.5,0.95); ballVel.copy(to).multiplyScalar(d/T*1.12); ballVel.y=GRAV*T/2*0.9; }
+    p.heading=Math.atan2(to.x,to.z); p.faceLock=0.45; if(!volley) ballAtRightFoot(p);
+    if(volley){ const T=THREE.MathUtils.clamp(d/32,0.6,1.05); ballVel.copy(to).multiplyScalar(d/T*1.05); ballVel.y=GRAV*T/2*0.8; }   // volleyed up and onto the mate
+    else if(d>20){ const T=THREE.MathUtils.clamp(d/30,0.5,0.95); ballVel.copy(to).multiplyScalar(d/T*1.12); ballVel.y=GRAV*T/2*0.9; }
     else { ballVel.copy(to).multiplyScalar(THREE.MathUtils.clamp(d*2.7,32,66)); ballVel.y=0.4; }   // hard, flat distribution
     p.kickCd=0.9; p.holdT=0; owner=null;
     passReceiver=best; passSeekT=THREE.MathUtils.clamp(d/14,0.6,1.8);   // the mate moves to meet it
@@ -1277,9 +1292,26 @@ function gkPass(p){
     return;
   }
   // nobody safe: clear it LONG and WIDE upfield (never into the middle in front of our own goal)
-  const sideX=(Math.abs(p.pos.x)>1?Math.sign(p.pos.x):(Math.random()<0.5?-1:1))*(HALF_W*0.55);
-  const v=new THREE.Vector3(sideX-p.pos.x,0,dir*38).setY(0).normalize();
-  ballVel.copy(v).multiplyScalar(36); ballVel.y=9; p.kickCd=0.9; p.holdT=0; owner=null; showPower(p,1);
+  const v=gkClearAim(p);
+  ballVel.copy(v).multiplyScalar(volley?40:36); ballVel.y=volley?12:9; p.kickCd=0.9; p.holdT=0; owner=null; showPower(p,1);
+}
+// Drop-kick after a catch (open play only, never a goal kick): face the target, short run-up holding the
+// ball, drop it onto the boot and volley it away on the clip's contact frame.
+function gkStartDropKick(p){
+  const name = Math.random()<0.7 ? 'Goalkeeper_Drop_Kick' : 'Goalkeeper_Drop_Kick_1';      // mostly right-footed
+  if(!GK[name] || !p.act['gk:'+name]) return false;
+  const m=GK[name].m, ts=1.25, st=0.4;                                                    // skip the idle start, a touch brisker
+  const best=gkPickTarget(p);
+  const aim = best ? best.pos.clone().sub(p.pos).setY(0) : gkClearAim(p);
+  if(aim.lengthSq()>0.01) p.heading=Math.atan2(aim.x,aim.z);
+  const D=(m.d-st)/ts;
+  p.gkKickClip='gk:'+name; p.gkKickTs=ts; p.gkKickT=D; p.gkKicked=false;
+  p.gkKickHit=D-(m.kick-st)/ts;                     // countdown value at the contact frame
+  p.gkKickRel=D-(m.rel-st)/ts;                      // countdown value when the ball leaves his hands
+  p.gkKickFoot = m.foot==='R' ? p.footR : p.footL;
+  p.gkKickRun = (m.fwd*MODEL_SCALE*0.8)/Math.max(0.3,(m.kick-st)/ts);   // run-up pace that matches his steps
+  p.faceLock=D; playGk(p,p.gkKickClip,ts,st);
+  return true;
 }
 
 // put the ball at the passer's RIGHT FOOT so the pass/kick leaves the right boot
@@ -1716,7 +1748,19 @@ function stepPlayer(p,dt){
       if(inOwnBox(p)){                  // in his area: hold the ball in hands briefly, then distribute
         p.gkHold=(p.gkHold||0)+dt;
         desired.set(0,0,0);
-        if(p.gkHold>0.6 && (p.dive||0)<=0){ gkPass(p); p.gkHold=0; }   // gets up from the save first
+        if(p.gkHold>0.6 && (p.dive||0)<=0 && !((p.gkKickT||0)>0)){       // gets up from the save first
+          if(!gkStartDropKick(p)){ gkPass(p); } p.gkHold=0; }
+        if((p.gkKickT||0)>0 && !p.gkKicked){
+          const fwdv=new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading));
+          const ahead=p.pos.clone().addScaledVector(fwdv,2.2);
+          const room = inOwnBox({team:p.team,pos:ahead});                    // never run out of the area holding it
+          if(p.gkKickT>p.gkKickHit && room) desired.copy(fwdv).multiplyScalar(10);
+          if(p.gkKickT<=p.gkKickHit){                                       // CONTACT frame: volley it away
+            p.gkKicked=true;
+            if(p.gkKickFoot){ const fp=p.gkKickFoot.getWorldPosition(new THREE.Vector3()); ball.position.set(fp.x,Math.max(0.45,fp.y+0.2),fp.z); }
+            gkPass(p,true); p.faceLock=Math.max(0,p.gkKickT);
+          }
+        }
       }else{                            // outside his area he CAN'T handle it — drop it to his feet and play it away
         p.gkHold=0;
         gkPass(p);                      // clear it to a teammate right away
@@ -1874,6 +1918,7 @@ function stepPlayer(p,dt){
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   // keepers ARRIVE at their spot (ease off when close) instead of overshooting at full speed and
   // jittering on the line — not while diving, when the lunge must stay at full pace
+  if(p.gk && (p.gkKickT||0)>0) spd = (!p.gkKicked && p.gkKickT>p.gkKickHit) ? p.gkKickRun : 0;   // drop-kick run-up pace, then planted
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(dl<0.25) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
   if(desired.lengthSq()>0.001){
@@ -1919,6 +1964,7 @@ function stepPlayer(p,dt){
   if(p.kickCd>0)p.kickCd-=dt;
   if((p.dive||0)>0){ p.dive-=dt; if(p.dive<=0) p.gkClip=null; }
   if((p.gkDir||0)>0) p.gkDir-=dt;
+  if((p.gkKickT||0)>0){ p.gkKickT-=dt; if(!p.gkKicked && owner!==p) p.gkKickT=0; }   // lost it before the kick: abort
   if((p.throwAnim||0)>0)p.throwAnim-=dt;
   if((p.stealCd||0)>0)p.stealCd-=dt;
   // rarely a forward gambles a run beyond the defence (random, not exaggerated)
@@ -1943,6 +1989,7 @@ function stepPlayer(p,dt){
   let state;
   if(p.slide>0) state='slide';            // real slide-tackle clip handles the low lay-out
   else if((p.dive||0)>0) state='dive';    // real keeper leap+catch clip
+  else if((p.gkKickT||0)>0 && p.gkKickClip) state='gkkick';
   else if((p.gkDir||0)>0 && p.gkDirClip && p.speed<2) state='gkdir';
   else if((p.kickTrig||0)>0) state='kick';
   else if(p.speed>3.6) state='run';            // break into a run sooner (quicker steps)
@@ -2023,7 +2070,8 @@ function playerBallInteraction(dt){
 
   // keeper has the ball IN HIS AREA: hold it UP in his hands (not on the grass), reaching the way he dived —
   // so a save looks like a catch with the hands. Outside the box he can't handle it, so it drops to his feet.
-  if(owner && owner.gk && inOwnBox(owner)){
+  // (not on a goal kick: then the ball rests on the grass at his feet and is kicked from the ground)
+  if(owner && owner.gk && inOwnBox(owner) && !(throwTimer>0 && owner===setPieceTaker)){
     const diving=(owner.dive||0)>0;
     const dir = diving ? (owner.diveDir||new THREE.Vector3(0,0,owner.team===0?1:-1))
                        : new THREE.Vector3(Math.sin(owner.heading),0,Math.cos(owner.heading));
@@ -2033,6 +2081,11 @@ function playerBallInteraction(dt){
     if(owner.handL && owner.handR){                 // real hands: the ball sits between the gloves through every catch pose
       want=owner.handL.getWorldPosition(new THREE.Vector3()).add(owner.handR.getWorldPosition(new THREE.Vector3())).multiplyScalar(0.5);
       want.y=Math.max(BALL_R,want.y);
+      if((owner.gkKickT||0)>0 && owner.gkKickFoot && owner.gkKickT<=owner.gkKickRel){   // drop-kick: released, falls onto the boot
+        const k=THREE.MathUtils.clamp((owner.gkKickRel-owner.gkKickT)/Math.max(0.05,owner.gkKickRel-owner.gkKickHit),0,1);
+        const fp=owner.gkKickFoot.getWorldPosition(new THREE.Vector3()); fp.y=Math.max(0.45,fp.y+0.2);
+        want.lerp(fp,k*k); ball.position.copy(want); ballVel.set(0,0,0); return;
+      }
     }
     ball.position.lerp(want,Math.min(1,dt*20)); ballVel.set(0,0,0);
     return;
