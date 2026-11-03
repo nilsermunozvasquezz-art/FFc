@@ -1821,6 +1821,7 @@ function ballDeflect(){
   const segx=ex-sx, segz=ez-sz; const seg2=segx*segx+segz*segz;
   for(const p of players){
     if(p===owner || (p.fall||0)>0 || p.sentOff) continue;
+    if((p.kickCd||0)>0.45 && p===lastKicker) continue;   // the ball he JUST struck can't bounce off his own body (it pinned keeper kicks)
     const rad   = p.gk ? 1.9 : (P_R+BALL_R+0.2);        // body size (keepers are a bigger wall)
     const maxY  = p.gk ? GOAL_H : 2.2;
     const minSp = p.gk ? 1.2 : 2.5;                      // even a slowish ball bounces off a body (no pass-through)
@@ -1831,8 +1832,9 @@ function ballDeflect(){
     const dx=cx-p.pos.x, dz=cz-p.pos.z; const d=Math.hypot(dx,dz);
     if(d<rad){
       const nx=dx/(d||1), nz=dz/(d||1);
-      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // place it on the body surface, not past it
       const vn=ballVel.x*nx+ballVel.z*nz;
+      if(vn>=0) continue;                                 // already moving AWAY from him: let it go (never pin it to his body)
+      ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // place it on the body surface, not past it
       // only respond when moving INTO the body; a small CAPPED vertical pop (never a straight-up rocket)
       if(vn<0){
         const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz;   // reflect off the body
