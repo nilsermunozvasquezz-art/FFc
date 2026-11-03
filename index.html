@@ -844,13 +844,18 @@ const linesmen=[makeLinesman(1),makeLinesman(-1)];
 linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,0));
 function stepLinesmen(dt){
   linesmen.forEach(l=>{
-    const tz = l.side>0 ? THREE.MathUtils.clamp(ball.position.z, -2, HALF_L-3)
+    let tz = l.side>0 ? THREE.MathUtils.clamp(ball.position.z, -2, HALF_L-3)
                         : THREE.MathUtils.clamp(ball.position.z, -(HALF_L-3), 2);
+    const tk = players.find(q=>q.tin) || ((throwTimer>0 && setPieceTaker && setPieceLabel==='SAQUE DE BANDA') ? setPieceTaker : null);
+    let lxOff=0;
+    if(tk && Math.sign(tk.pos.x)===l.side){ if(Math.abs(tz-tk.pos.z)<10){ const mid=l.side>0?HALF_L*0.45:-HALF_L*0.45; const sd=Math.abs(l.z-tk.pos.z)>0.5?Math.sign(l.z-tk.pos.z):(Math.sign(mid-tk.pos.z)||1); tz=tk.pos.z+sd*10; }   // stop on the side he's coming from
+      if(Math.abs(l.z-tk.pos.z)<6) lxOff=3.5; }   // give the thrower room (and step back off the line while passing him)
+    l.lxOff=(l.lxOff||0)+(lxOff-(l.lxOff||0))*Math.min(1,dt*4);
     const inMyHalf = l.side>0 ? ball.position.z > -1 : ball.position.z < 1;
     const prevZ=l.z;
     l.z+=(tz-l.z)*Math.min(1,dt*(inMyHalf?2.5:0.9));
     const run=Math.abs((l.z-prevZ)/Math.max(dt,1e-4));
-    l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,l.z);
+    l.mesh.position.set(l.side*(HALF_W+1.6+(l.lxOff||0)),FOOT_LIFT,l.z);
     const vz=l.z-prevZ;
     const faceField = l.side>0?-Math.PI/2:Math.PI/2;
     const target = run>1.3 ? (vz>0?0:Math.PI) : faceField;
@@ -1221,7 +1226,7 @@ function doAction(which, power){
   // any set-piece (throw-in / free kick / offside) you take: you MUST pass to a teammate to restart —
   // you can't shoot or play it out yourself. Aim with the joystick, or it finds the best open teammate.
   if(throwTimer>0 && setPieceTaker && p===setPieceTaker){
-    if(setPieceForm>0){ owner=setPieceTaker; return; }   // wait: teammates are still getting into position
+    if(setPieceForm>0){ owner=setPieceTaker; spQueued={which,power}; return; }   // pressed early: it's taken the moment it's allowed
     owner=setPieceTaker;
     if(which==='A' && setPieceLabel==='TIRO LIBRE' && spFKnear){ fkShot(p, power, moveDir.lengthSq()>0.05 ? new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize() : null); return; }
     let tgt=null;
@@ -1817,7 +1822,7 @@ function passBall(p,target,power){
     if(p.tin) return;                                  // already throwing
     const nm=Math.random()<0.5?'pk:Throw_In':'pk:Throw_In_1';
     const fw=new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading));
-    p.tin={clip:nm, ct:0, ts:1.4, target, power, fw, start:p.pos.clone()};
+    p.tin={clip:nm, ct:0, ts:2.0, target, power, fw, start:p.pos.clone()};
     return;
   }
   if(setPieceLabel==='SAQUE DE BANDA' && throwTimer>0 && setPieceTaker===p){
@@ -2479,6 +2484,14 @@ function stepPlayer(p,dt){
       let fz=THREE.MathUtils.clamp(f[1]*0.5 + ball.position.z*0.3 + dir*adv, -HALF_L+3, HALF_L-3), fx=f[0];
       if(isTaker && p!==setPieceTaker && (setPieceLabel==='TIRO LIBRE'||setPieceLabel==='FUERA DE JUEGO')) fz=keepOnsideZ(p.team,fz);   // push up, but stay onside
       if(setPieceLabel==='SAQUE DE BANDA' && p.tinSpot){ fx=p.tinSpot.x; fz=p.tinSpot.z; }   // coming short to take the throw
+      if(!isTaker && !(setPieceLabel==='TIRO LIBRE' && spFKnear) && (setPieceLabel==='TIRO LIBRE'||setPieceLabel==='FUERA DE JUEGO')){
+        const og=p.team===0?-HALF_L:HALF_L, depth=Math.abs(ball.position.z-og);
+        if(p.roleIdx===STRIKER){ fz=THREE.MathUtils.clamp(ball.position.z+dir*14,-HALF_L+8,HALF_L-8); fx=f[0]*0.6; }   // one man stays up for the counter
+        else { const lane=[0,0.35,0.55,0.75,0.45][p.roleIdx%5];
+          fz=og+dir*THREE.MathUtils.clamp(depth*lane+8, 8, Math.max(8,depth-10));                        // back into his zone, goal-side of the ball
+          fx=f[0]*0.8+ball.position.x*0.25; }
+      }
+      if(p.spJit){ fx+=p.spJit.x; fz+=p.spJit.z; }                                                 // everyone takes a slightly different spot (not robotic)
       if(setPieceLabel==='TIRO LIBRE' && spFKnear){
         if(p.team!==throwTeam){
           if(p.wallPt){ fx=p.wallPt.x; fz=p.wallPt.z; }                                   // in the WALL
@@ -2490,7 +2503,8 @@ function stepPlayer(p,dt){
       if(owner===p) desired.set(0,0,0);
       else if(p.team!==throwTeam && !p.wallPt){
         const away=p.pos.clone().sub(ball.position).setY(0);
-        if(away.length()<9){ away.setLength(9.2); desired.copy(ball.position).add(away).sub(p.pos).setY(0); }
+        if(away.length()<9){ const toT=new THREE.Vector3(fx-p.pos.x,0,fz-p.pos.z); const al=away.length()||1; away.multiplyScalar(1/al);
+          if(toT.lengthSq()>0.01) toT.normalize(); desired.copy(toT).addScaledVector(away,1.3*(9.2-al)/9.2+0.35).multiplyScalar(6); }   // curl round the ball (keeping 9 m) on the way to his spot
         else desired.set(fx-p.pos.x,0,fz-p.pos.z);
       }else desired.set(fx-p.pos.x,0,fz-p.pos.z);
       p.spArr = desired.length()<1.8; p.spSpot = p.pos.clone().add(desired); p.spSpot.y=0;
@@ -2590,6 +2604,7 @@ function stepPlayer(p,dt){
   if((p.pkT||0)>0) spd=0;                                   // follow-through after the penalty
   if(p.gk && (p.gkKickT||0)>0) spd = (!p.gkKicked && p.gkKickT>p.gkKickHit) ? p.gkKickRun : 0;   // drop-kick run-up pace, then planted
   p._dRaw=desired.length();
+  if(throwTimer>0 && !p.gk && p!==setPieceTaker && p._dRaw<3.5) spd*=Math.max(0.22,p._dRaw/3.5);   // glide into position, then settle
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
     if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
@@ -2901,7 +2916,8 @@ function awardSetPiece(team, x, z, label, taker, formTime){
     }
   } else { ball.position.set(x,BALL_R,z); ballVel.set(0,0,0); owner=null; }
   // nobody is teleported: every player RUNS to his spot during the form-up (and opponents back off 9 m)
-  players.forEach(p=>{ p.wallPt=null; p.spArr=undefined; p.fkPassOnly=false; p.pk2=null; p.tinSpot=null; }); pendingKicker=null;   // no pass swing survives the whistle
+  players.forEach(p=>{ p.wallPt=null; p.spArr=undefined; p.fkPassOnly=false; p.pk2=null; p.tinSpot=null; p.spSpot=null;
+    p.spJit=new THREE.Vector3((Math.random()-0.5)*4,0,(Math.random()-0.5)*4); }); pendingKicker=null; spQueued=null;   // no pass swing survives the whistle
   if(label==='SAQUE DE BANDA' && rec){
     const sx=Math.sign(rec.pos.x)||1, dirT=team===0?1:-1;
     const spots=[ new THREE.Vector3(sx*(HALF_W-6), 0, THREE.MathUtils.clamp(rec.pos.z+dirT*12,-HALF_L+6,HALF_L-6)),     // down the line
@@ -2924,7 +2940,7 @@ function awardSetPiece(team, x, z, label, taker, formTime){
     }
   }
 }
-let spFKnear=false, spHoldT=0, spFade=0, spFadeSnapped=false, spFadeDone=false, spQuick=false, spQuickNext=false;
+let spQueued=null, spFKnear=false, spHoldT=0, spFade=0, spFadeSnapped=false, spFadeDone=false, spQuick=false, spQuickNext=false;
 // throw-in: ball out over a sideline -> team that didn't touch it last
 function setupThrow(sideSign, zOut){
   spQuickNext=true; awardSetPiece(lastTouch===0?1:0, sideSign*(HALF_W-0.5), THREE.MathUtils.clamp(zOut,-HALF_L+5,HALF_L-5), 'SAQUE DE BANDA', null, 0.7);   // quick throw-in
@@ -3194,6 +3210,7 @@ function loop(now){
       if(throwTimer>0){
         if(!(cardTimer>0)) throwTimer-=dt;              // the restart waits for the referee to finish the booking
         if(setPieceForm>0 && !(cardTimer>0)) setPieceForm-=dt;   // count down the form-up (held while the ref is still booking)
+        if(spQueued && setPieceForm<=0 && setPieceTaker && setPieceTaker.team===0 && owner===setPieceTaker){ const q=spQueued; spQueued=null; doAction(q.which,q.power); }
         if(spFade>0){                                             // blackout in progress
           spFade-=dt; setPieceForm=Math.max(setPieceForm,0.3); throwTimer+=dt;
           if(!spFadeSnapped && spFade<0.32){ spFadeSnapped=true;
@@ -3201,6 +3218,8 @@ function loop(now){
               const tb=ball.position.clone().sub(q.pos); if(tb.lengthSq()>0.5) q.heading=Math.atan2(tb.x,tb.z); } });
             document.getElementById('spFade').style.opacity='0'; }
           if(spFade<=0) setPieceForm=0.25;
+        }else if(spQuick && !spFadeDone && setPieceForm>0 && setPieceForm<0.3 && players.some(q=>q.spSpot && !q.sentOff && q!==setPieceTaker && !q.gk && (q.fall||0)<=0 && (q.getupT||0)<=0 && q.pos.distanceTo(q.spSpot)>16)){
+          spFadeDone=true; spFade=0.5; spFadeSnapped=false; players.forEach(q=>{ if(q.spSpot && q.pos.distanceTo(q.spSpot)>3) q.spArr=false; }); document.getElementById('spFade').style.opacity='1';   // quick blackout, everyone set
         }else if(!spQuick && setPieceForm>0 && setPieceForm<0.3 && !spFadeDone && players.some(q=>q.spArr===false && !q.sentOff && (q.fall||0)<=0 && (q.getupT||0)<=0)){
           setPieceForm=0.3; throwTimer+=dt; spHoldT+=dt;         // still running into place: wait for them a moment...
           if(spHoldT>1.6 && !spFadeDone){ spFadeDone=true; spFade=0.6; spFadeSnapped=false; document.getElementById('spFade').style.opacity='1'; }   // ...then black out and set them
