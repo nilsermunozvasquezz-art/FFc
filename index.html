@@ -93,6 +93,10 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 .mq button{min-width:66px;padding:8px 0;border-radius:10px;border:1px solid rgba(120,200,160,.3);
   background:rgba(255,255,255,.05);color:#cfeeda;font-weight:700;font-size:12px;letter-spacing:.5px;cursor:pointer}
 .mq button.on{background:linear-gradient(90deg,#2f7bff,#4fd387);color:#042;border-color:transparent}
+#brk{position:fixed;inset:0;z-index:19;display:none;place-items:center;align-content:center;gap:8px;pointer-events:none;background:rgba(4,12,24,.62);text-align:center}
+#brk .bt{font-size:54px;font-weight:900;letter-spacing:4px;color:#ffe14a;text-shadow:0 4px 20px #000}
+#brk .bs{font-size:44px;font-weight:900;color:#fff;text-shadow:0 3px 14px #000}
+#brk .bn{font-size:18px;font-weight:700;letter-spacing:2px;color:#cfe6ff;text-shadow:0 2px 10px #000}
 #goal{position:fixed;inset:0;z-index:18;display:none;place-items:center;pointer-events:none;
   background:rgba(0,0,0,.25)}
 #goal .g{font-size:70px;font-weight:900;letter-spacing:4px;color:#ffe14a;text-shadow:0 4px 20px #000;
@@ -156,6 +160,7 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 </div>
 
 <div id="goal"><div class="g">¡GOOOL!</div></div>
+<div id="brk"><div class="bt" id="brkT">MEDIO TIEMPO</div><div class="bs" id="brkS">0 - 0</div><div class="bn" id="brkN">Los equipos cambian de lado</div></div>
 
 <div id="card"><div class="cwrap"><div class="crd" id="crd"></div><div class="ctx" id="ctx"></div></div></div>
 <div id="penov"><div class="pt">PENAL</div><div class="ph" id="penHint"></div></div>
@@ -970,7 +975,59 @@ function updatePowerBars(dt){
 }
 
 /* ============ game state ============ */
-let score=[0,0], timeLeft=MATCH_SECS, running=false, paused=false;
+const HALF_SECS=MATCH_SECS/2, ET_SECS=60;                  // two halves (2:30 each) + two extra-time halves (1:00 each)
+let period=1, SIDE_FLIP=false, so=null;                      // so = penalty shoot-out state
+let score=[0,0], timeLeft=HALF_SECS, running=false, paused=false;
+// switching ends: the logic keeps each team's goal, the VIEW is mirrored (the stadium is symmetric end-to-end),
+// so after half time you attack the other way on screen — joystick and minimap follow the mirror
+function setFlip(f){ SIDE_FLIP=f; const c=document.getElementById('game'); if(c) c.style.transform=f?'scaleX(-1)':''; }
+function joyVec(){ return new THREE.Vector3(moveDir.y,0,(SIDE_FLIP?1:-1)*moveDir.x); }
+function periodLabel(){ return period===1?'1T':period===2?'2T':period===3?'TE1':period===4?'TE2':'PEN'; }
+function showBreak(title, note, ms){
+  const b=document.getElementById('brk'); document.getElementById('brkT').textContent=title;
+  document.getElementById('brkS').textContent=so ? ('PENALES  '+so.goals[0]+' - '+so.goals[1]) : (score[0]+' - '+score[1]);
+  document.getElementById('brkN').textContent=note||''; b.style.display='grid';
+  clearTimeout(showBreak._t); showBreak._t=setTimeout(()=>{ b.style.display='none'; }, ms||2600);
+}
+// the clock ran out in this period: half time / full time / extra time / penalties
+function periodEnd(){
+  running=false;
+  const next=(p,secs,kick,title,note)=>{ showBreak(title,note,2700);
+    setTimeout(()=>{ period=p; timeLeft=secs; setFlip(!SIDE_FLIP); kickoff(kick); running=true; last=performance.now(); }, 2800); };
+  if(period===1) next(2,HALF_SECS,0,'MEDIO TIEMPO','Los equipos cambian de lado');
+  else if(period===2){ if(score[0]===score[1]) next(3,ET_SECS,1,'¡TIEMPO EXTRA!','Empate: se juegan 2 tiempos más'); else endMatch(); }
+  else if(period===3) next(4,ET_SECS,0,'FIN DEL 1er TIEMPO EXTRA','Los equipos cambian de lado');
+  else if(period===4){ if(score[0]===score[1]) startShootout(); else endMatch(); }
+}
+// ---- penalty shoot-out: 5 each, then sudden death ----
+function startShootout(){
+  period=5; so={goals:[0,0], kicks:[0,0], turn:0, sudden:false, busy:false};
+  showBreak('¡PENALES!','Empate: se define desde los once metros',2800);
+  setTimeout(()=>{ running=true; last=performance.now(); soNext(); }, 2900);
+}
+function soWinner(){
+  const g=so.goals, k=so.kicks;
+  if(!so.sudden){
+    if(g[0] > g[1]+(5-k[1])) return 0; if(g[1] > g[0]+(5-k[0])) return 1;
+    if(k[0]>=5 && k[1]>=5){ if(g[0]!==g[1]) return g[0]>g[1]?0:1; so.sudden=true; }
+    return -1;
+  }
+  if(k[0]===k[1] && g[0]!==g[1]) return g[0]>g[1]?0:1;
+  return -1;
+}
+function soNext(){
+  const w=soWinner(); if(w>=0){ endMatch(w); return; }
+  so.busy=false; celeb=null; setupPenalty(so.turn); if(pen) pen.shootout=true;
+  document.getElementById('tim').textContent='PEN '+so.goals[0]+'-'+so.goals[1];
+}
+function soResolve(scored){
+  if(!so || !pen || !pen.shootout || pen.soDone) return;
+  pen.soDone=true; const t=pen.team; so.kicks[t]++; if(scored) so.goals[t]++;
+  flashText(scored?'¡GOL!':'¡FALLÓ!');
+  document.getElementById('tim').textContent='PEN '+so.goals[0]+'-'+so.goals[1];
+  so.turn=1-t; so.busy=true;
+  setTimeout(()=>{ pen=null; penReticle.visible=false; soNext(); }, 1700);
+}
 let menuActive=true, menuT=0;   // main-menu state: a slow cinematic camera pans the pitch behind the menu
 let ctrl=1;                       // index into blue team (players[ctrl]) controlled
 let owner=null;                   // player object holding ball, or null
@@ -984,6 +1041,7 @@ let koGrace=0;                    // just after a kickoff: the other team keeps 
 let passReceiver=null, passSeekT=0;   // the mate a pass is heading to moves to meet it, so passes connect
 let possTeam=-1, possConfirmTeam=-1, possConfirmT=0;   // which team is "in possession" for shape (with hysteresis)
 function scheduleRestart(delay, label, fn){
+  if(so && period===5) return;                 // shoot-out: no restarts (a miss is just a miss)
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
   throwTimer=0; setPieceForm=0;              // a new whistle supersedes any pending set-piece
   spFade=0; { const fe=document.getElementById('spFade'); if(fe) fe.style.opacity='0'; }
@@ -1138,7 +1196,7 @@ document.getElementById('mBack').onclick=()=>{panelOpt.style.display='none'; pan
 
 document.getElementById('goBtn').onclick=()=>{
   document.getElementById('start').style.display='none';
-  menuActive=false; running=true; kickoff(1);
+  menuActive=false; running=true; period=1; timeLeft=HALF_SECS; so=null; setFlip(false); kickoff(1);
 };
 // graphics quick-select on the main menu (same setting as the pause-menu options)
 (function(){ const seg=document.getElementById('startGfx'); if(!seg) return;
@@ -1186,7 +1244,7 @@ function computeDefRoles(){
 }
 function aimDir(p){
   // joystick direction (side-camera mapped) if pushed, else toward opponent goal
-  if(moveDir.lengthSq()>0.05) return new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
+  if(moveDir.lengthSq()>0.05) return joyVec().normalize();
   const gz = p.team===0?HALF_L+2:-HALF_L-2;
   const d=new THREE.Vector3(0,0,gz).sub(p.pos).setY(0);
   if(d.lengthSq()<0.01) d.set(0,0,p.team===0?1:-1);   // never zero -> never a straight-up ball
@@ -1246,9 +1304,9 @@ function doAction(which, power){
   if(throwTimer>0 && setPieceTaker && p===setPieceTaker){
     if(setPieceForm>0){ owner=setPieceTaker; spQueued={which,power}; return; }   // pressed early: it's taken the moment it's allowed
     owner=setPieceTaker;
-    if(which==='A' && setPieceLabel==='TIRO LIBRE' && spFKnear){ fkShot(p, power, moveDir.lengthSq()>0.05 ? new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize() : null); return; }
+    if(which==='A' && setPieceLabel==='TIRO LIBRE' && spFKnear){ fkShot(p, power, moveDir.lengthSq()>0.05 ? joyVec().normalize() : null); return; }
     let tgt=null;
-    if(moveDir.lengthSq()>0.05){ const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize(); tgt=directionalPassTarget(setPieceTaker,jd); }
+    if(moveDir.lengthSq()>0.05){ const jd=joyVec().normalize(); tgt=directionalPassTarget(setPieceTaker,jd); }
     if(!tgt) tgt=(setPieceLabel==='SAQUE DE BANDA'?throwInTarget(setPieceTaker):null) || passTarget(setPieceTaker) || kickoffPassTarget(setPieceTaker);
     if(tgt){ passBall(setPieceTaker,tgt,power); ctrl=players.indexOf(tgt); }
     setPieceTaker=null;
@@ -1265,7 +1323,7 @@ function doAction(which, power){
     if(pl.kickCd>0) return;
     if(which==='B'){            // PASE — the joystick aims the pass (not random)
       if(moveDir.lengthSq()>0.05){
-        const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();   // where you're pointing on screen
+        const jd=joyVec().normalize();   // where you're pointing on screen
         const tgt=directionalPassTarget(pl,jd);
         if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
         // nobody in that direction -> drive a firm ground ball exactly where you aim
@@ -1278,7 +1336,7 @@ function doAction(which, power){
         queueKick(pl, ad, ()=>{ ballAtRightFoot(pl); ballVel.copy(ad).multiplyScalar(37+32*power); ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); } return;
     }
     { const gz0=pl.team===0?HALF_L:-HALF_L; let pre;
-      if(which==='A') pre = moveDir.lengthSq()>0.05 ? new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize() : new THREE.Vector3(0,0,gz0).sub(ball.position).setY(0).normalize();
+      if(which==='A') pre = moveDir.lengthSq()>0.05 ? joyVec().normalize() : new THREE.Vector3(0,0,gz0).sub(ball.position).setY(0).normalize();
       else pre = aimDir(pl);
       queueKick(pl, pre, ()=>doStrike(), 'shot'); }
     return;
@@ -1293,7 +1351,7 @@ function doAction(which, power){
       const okp=players.find(q=>q.gk&&q.team!==pl.team&&!q.sentOff);
       let tx;
       if(moveDir.lengthSq()>0.05){
-        const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
+        const jd=joyVec().normalize();
         const dz=gz-ball.position.z;
         if(jd.z*Math.sign(dz)>0.15) tx=ball.position.x + jd.x/jd.z*dz;            // where your aim line crosses the goal line
         else tx=Math.sign(jd.x||1)*GOAL_W/2;                                      // pointing sideways: that corner
@@ -1611,7 +1669,7 @@ function stepPenalty(dt){
   if(pen.phase==='aim'){
     if(pen.team===0){
       const sp=10;                                                         // aim speed across the goal
-      pen.aimX=THREE.MathUtils.clamp(pen.aimX - pen.dir*moveDir.x*sp*dt, -GOAL_W/2+0.4, GOAL_W/2-0.4);
+      pen.aimX=THREE.MathUtils.clamp(pen.aimX - pen.dir*(SIDE_FLIP?-1:1)*moveDir.x*sp*dt, -GOAL_W/2+0.4, GOAL_W/2-0.4);
       pen.aimY=THREE.MathUtils.clamp(pen.aimY - moveDir.y*sp*0.6*dt, 0.35, GOAL_H-0.3);
       if(pen.t>14) penStartKick(0.7);                                      // don't stall forever
     } else if(pen.t>1.9) penStartKick(0.5+Math.random()*0.45);
@@ -2301,7 +2359,7 @@ function stepPlayer(p,dt){
   }else if(isCtrl && !(throwTimer>0 && owner!==p && (keyDir(), moveDir.lengthSq()<0.05))){
     keyDir();
     // side camera: screen-right = world -Z, screen-up = world -X
-    desired.set(moveDir.y, 0, -moveDir.x);
+    desired.copy(joyVec());
     // a pass is coming to you and you're not steering -> drift to meet the ball so it connects
     if(passReceiver===p && passSeekT>0 && owner!==p && desired.lengthSq()<0.05){
       const ic=icpt[p.team] ? interceptFor(p,12) : {pt:ball.position};
@@ -3040,6 +3098,7 @@ function stepBall(dt){
 }
 
 function doGoal(team){
+  if(so && pen && pen.shootout){ if(!pen.soDone){ goalFlash=1.2; soResolve(true); } return; }   // shoot-out goal (not on the scoreboard)
   score[team]++;
   document.getElementById('s'+team).textContent=score[team];
   goalFlash=1.6;
@@ -3141,6 +3200,7 @@ const MW=mm.width,MH=mm.height;
 // horizontal pitch matching the view: z runs left(+Z)->right(-Z), x runs top(-X)->bottom(+X)
 const PADL=4;                                   // inner padding
 function toMM(x,z){
+  if(SIDE_FLIP) z=-z;
   const h = PADL + (0.5 - z/(HALF_L)*0.5)*(MW-2*PADL);
   const v = PADL + (x/(HALF_W)*0.5+0.5)*(MH-2*PADL);
   return [h,v];
@@ -3306,10 +3366,17 @@ function simFrame(rdt, lastSub){
       updateLandMarker();
     }
     if(chilenaReq>0) chilenaReq-=rdt;
-    if(pen && pen.phase==='live'){ pen.camT-=dt; pen.guessT-=dt; if(pen.camT<=0){ pen=null; penReticle.visible=false; } }
-    if(!(pen && pen.phase!=='live') && !celeb) timeLeft-=rdt;   // the clock stops for penalty set-ups and celebrations
-    if(timeLeft<=0){ timeLeft=0; running=false; endMatch(); }
-    if(lastSub) document.getElementById('tim').textContent=fmt(timeLeft);
+    if(pen && pen.phase==='live'){ pen.camT-=dt; pen.guessT-=dt;
+      if(pen.shootout && !pen.soDone){                          // saved / wide / back out: it's a miss (no rebounds in a shoot-out)
+        const k=pen.keeper, away=(ballVel.z*pen.dir)<0;
+        if(owner===k || (ballVel.length()<3 && pen.camT<1.8) || (away && ball.position.distanceTo(pen.S)>4) || pen.camT<=0) soResolve(false);
+      }
+      else if(pen.camT<=0 && !pen.shootout){ pen=null; penReticle.visible=false; } }
+    if(period<5){
+      if(!(pen && pen.phase!=='live') && !celeb) timeLeft-=rdt;   // the clock stops for penalty set-ups and celebrations
+      if(timeLeft<=0 && !celeb){ timeLeft=0; periodEnd(); }
+      if(lastSub) document.getElementById('tim').textContent=periodLabel()+' '+fmt(timeLeft);
+    }
   }
 }
 // if the phone can't keep up, step the graphics down by itself (unless you picked the quality yourself)
@@ -3323,10 +3390,11 @@ function autoGfx(fdt){
 }
 
 let ended=false;
-function endMatch(){
-  if(ended)return; ended=true;
+function endMatch(soW){
+  if(ended)return; ended=true; running=false;
   const g=document.getElementById('goal'); g.style.display='grid';
-  const msg = score[0]>score[1]?'¡GANASTE!':score[0]<score[1]?'PERDISTE':'EMPATE';
+  const msg = (soW===0) ? '¡GANASTE EN PENALES!' : (soW===1) ? 'PERDISTE EN PENALES' : score[0]>score[1]?'¡GANASTE!':score[0]<score[1]?'PERDISTE':'EMPATE';
+  if(so) document.getElementById('tim').textContent='PEN '+so.goals[0]+'-'+so.goals[1];
   g.querySelector('.g').textContent=msg;
 }
 
