@@ -550,6 +550,13 @@ function gkTipOver(p){
   ball.position.y=Math.max(ball.position.y,GOAL_H-0.4);
   p.gkTip=false; p.kickCd=0.8; owner=null; lastTouch=p.team; flashText('¡MANOTAZO!');
 }
+// the keeper's facing: straight up the pitch, turned toward the ball by at most ~55 degrees
+function gkFaceHeading(p){
+  const fwdH = p.team===0 ? 0 : Math.PI;
+  const tb=ball.position.clone().sub(p.pos); if(tb.x*tb.x+tb.z*tb.z<0.5) return fwdH;
+  let d=Math.atan2(tb.x,tb.z)-fwdH; while(d>Math.PI)d-=6.2832; while(d<-Math.PI)d+=6.2832;
+  return fwdH + THREE.MathUtils.clamp(d,-0.95,0.95);
+}
 function gkStartSave(p, pred, tz, high, comingOut){
   if(!GK['Goalkeeper_Catch'] || !p.act['gk:Goalkeeper_Catch']) return false;
   const bv=new THREE.Vector3(-ballVel.x,0,-ballVel.z);                       // face the shot
@@ -1313,13 +1320,13 @@ function cpuTryKick(p){
     // aim for the corner AWAY from the keeper so it's a real test, not straight at them
     const gk=players.find(q=>q.team===0&&q.gk);
     const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
-    const tx = side*(GOAL_W*0.5-1.1) + (Math.random()-0.5)*1.4;
+    const tx = side*(GOAL_W*0.5-1.0) + (Math.random()-0.5)*0.9;   // picks the corner more accurately
     const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0);
     if(dir.lengthSq()<1) dir.set(0,0,-1);        // on the goal line the aim degenerates to zero -> never launch straight up
     dir.normalize();
     const pw=0.85+Math.random()*0.15;
     queueKick(p, dir, ()=>{ p.heading=Math.atan2(dir.x,dir.z); p.faceLock=0.6; ballAtRightFoot(p);
-      ballVel.copy(dir).multiplyScalar(46+19*pw); ballVel.y=2.8+2.2*pw; p.kickCd=.6; owner=null; showPower(p,pw); }, 'shot');
+      ballVel.copy(dir).multiplyScalar(50+20*pw); ballVel.y=2.8+2.2*pw; p.kickCd=.6; owner=null; showPower(p,pw); }, 'shot');
     return true;
   }
   // near the box: lay it off to the best-placed open mate, or keep driving at goal yourself
@@ -1973,7 +1980,7 @@ function resolveTackles(){
         const reactDur = red?4.2:3.2;
         s.reactT=reactDur; s.reactType='protest';
         players.forEach(q=>{ if(q.sentOff||q===o||q===s||(q.fall||0)>0) return;
-          if(q.pos.distanceTo(o.pos)>22) return;
+          if(q.pos.distanceTo(o.pos)>22 || q.gk) return;
           if(q.team===s.team){ q.reactT=reactDur*0.85; q.reactType='protest'; }
           else { q.reactT=reactDur*0.85; q.reactType='anger'; } });
         if(red){ s.sentOff=true; if(owner===s) owner=null;      // red card -> off the pitch
@@ -2024,13 +2031,17 @@ function pressSteal(){
 }
 
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
-function cpuSteal(){
+function cpuSteal(dtS){
   if(awaitKickoffPass||koGrace>0||throwTimer>0||kickoffHold>0||deadTimer>0) return;   // no stealing during any restart
-  if(!(owner && owner.team===0)) return;
-  const carrier=owner;
+  if(!(owner && owner.team===0) || owner.pk2) return;
+  const carrier=owner; dtS=dtS||1/60;
   for(const p of players){
     if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
-    if(p.pos.distanceTo(carrier.pos)<1.55){
+    const dd=p.pos.distanceTo(carrier.pos);
+    // close enough to reach the ball: wins it at a steady rate (more if he comes from the front or you're slow)
+    const toBall=ball.position.clone().sub(p.pos).setY(0), front=toBall.lengthSq()>0.01 ? toBall.normalize().dot(new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading))) : 1;
+    const rate = (dd<1.55) ? 99 : (dd<3.9 && front>0.2) ? (1.35 + (carrier.speed<6?1.0:0) + (front>0.7?0.5:0)) : 0;
+    if(rate>0 && Math.random()<rate*dtS){
       const away=p.pos.clone().sub(carrier.pos).setY(0);
       if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
       away.normalize();
@@ -2345,7 +2356,7 @@ function stepPlayer(p,dt){
       if(shot || swept || near || owner===p || bd<17) p.gkDir=0;
       else if(!((p.gkDir||0)>0) && (p.gkDirCd||0)<=0 && (p.dive||0)<=0 && p.speed<5 && desired.length()<3 && ((oppBall && bd>19) || bd>38 || spVs) && GK['Goalkeeper_Directing']){
         p.gkDir=3.6; p.gkDirCd=5+Math.random()*5; p.vel.set(0,0,0);
-        { const tb=ball.position.clone().sub(p.pos); if(tb.lengthSq()>1) p.heading=Math.atan2(tb.x,tb.z); }   // squared up to the play, not the stands
+        p.heading=gkFaceHeading(p);   // squared up to the play, not the stands
         p.gkDirClip='gk:'+(Math.random()<0.5?'Goalkeeper_Directing':'Goalkeeper_Directing_1'); playGk(p,p.gkDirClip,1.0,0.8);
       }
       if((p.gkDir||0)>0){ const dl=desired.length();
@@ -2515,7 +2526,7 @@ function stepPlayer(p,dt){
       }
       // cpu slide-tackles the human carrier when pressing and close
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0 && rank<=1
-         && p.pos.distanceTo(owner.pos)<4.4 && Math.random()<dt*2.2){
+         && p.pos.distanceTo(owner.pos)<4.6 && Math.random()<dt*2.8){
         p.slide=0.6; p.slideMax=0.6; p.slideCd=1.8;
       }
     }else if(weHave && !p.gk){
@@ -2545,7 +2556,7 @@ function stepPlayer(p,dt){
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
   if(owner===p && p.team===1) spd=Math.max(spd,14.0);  // red drives at you with the ball
   if(owner===p && isCtrl) spd=sprint?19.5:14.8;         // YOU run quicker with the ball at your feet
-  if(redDefend) spd=Math.max(spd,14.0);                // red hustles to win it back
+  if(redDefend) spd=Math.max(spd,15.6);                // red hustles hard to win it back
   // a defender caught UPFIELD of the ball sprints back to recover goal-side (both teams) — so they get back to defend
   const _gd = p.team===0?1:-1;
   if(!p.gk && possTeam!==p.team && (p.pos.z-ball.position.z)*_gd > 2) spd=Math.max(spd,14.8);
@@ -2575,11 +2586,13 @@ function stepPlayer(p,dt){
   }
   if((p.faceLock||0)>0) p.faceLock-=dt;                          // count down the facing lock
   { let face=false;
-    if(p.gk && !((p.dive||0)>0) && !((p.gkKickT||0)>0) && owner!==p && (p.faceLock||0)<=0 && !(p.gkReact && p._dRaw>4)) face=true;
+    if(p.gk && !((p.dive||0)>0) && !((p.gkKickT||0)>0) && !p.gkThr && (p.faceLock||0)<=0 && !(p.gkReact && p._dRaw>4)) face=true;
     if(!p.gk && passReceiver===p && owner!==p && (p.faceLock||0)<=0 && p._dRaw<2 && ball.position.distanceTo(p.pos)<26) face=true;
     if(!p.gk && owner!==p && (throwTimer>0||kickoffHold>0) && p._dRaw<0.8 && (p.faceLock||0)<=0) face=true;
-    if(face){ const tb=ball.position.clone().sub(p.pos); if(tb.x*tb.x+tb.z*tb.z>0.5){
-      const th=Math.atan2(tb.x,tb.z); let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
+    if(face){ const tb=ball.position.clone().sub(p.pos); if(tb.x*tb.x+tb.z*tb.z>0.5 || p.gk){
+      let th=Math.atan2(tb.x,tb.z);
+      if(p.gk) th=gkFaceHeading(p);                                   // keeper: square to the field, watching the ball
+      let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
       p.heading+=dh*Math.min(1,dt*9); } } }
   p.pos.addScaledVector(p.vel,dt);
   { const lim = (throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA') ? HALF_W+TIN_BACK+1 : HALF_W+1;
@@ -3180,7 +3193,7 @@ function loop(now){
       separatePlayers();
       resolveTackles();
       pressSteal();
-      cpuSteal();
+      cpuSteal(dt);
       playerBallInteraction(dt);
       // kickoff is "played" once the taker passes the ball (or it crosses midfield) -> release the foes
       if(awaitKickoffPass){
