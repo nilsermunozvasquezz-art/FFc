@@ -238,7 +238,7 @@ const AIR_FR = 0.88;                  // air drag (per second factor)
 const POSSESS = 2.0;                       // distance to control ball
 const MATCH_SECS = 300;
 const TEAMS = 2, PER_TEAM = 6;             // 1 GK + 5 outfield
-const GAME_SPEED = 0.66;                    // <1 slows the whole match for a calmer pace
+const GAME_SPEED = 0.9;                     // match pace (1 = real time); a touch under real time keeps it readable
 
 /* ============ renderer / scene ============ */
 const canvas = document.getElementById("game");
@@ -249,7 +249,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 if('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
 // graphics quality (Alta / Media / Baja) — adjustable from the menu
-let gfx='alta';
+let gfx = (matchMedia && matchMedia('(pointer:coarse)').matches) ? 'media' : 'alta';   // phones start lighter
 try{const q=localStorage.getItem('ffcGfx'); if(q)gfx=q;}catch(e){}
 function applyGfx(q){
   gfx=q; try{localStorage.setItem('ffcGfx',q);}catch(e){}
@@ -1109,7 +1109,7 @@ camRange.addEventListener('input',()=>{camZoom=camRange.value/100; lblZoom();
 // graphics quality buttons
 const gfxSeg=document.getElementById('gfxSeg');
 function markGfx(){ gfxSeg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.q===gfx)); }
-gfxSeg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ applyGfx(b.dataset.q); markGfx(); }));
+gfxSeg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ applyGfx(b.dataset.q); try{localStorage.setItem('ffcGfxUser','1');}catch(e){} gfxUser=true; markGfx(); }));
 markGfx();
 function openMenu(){menu.style.display='grid'; panelMain.style.display='block'; panelOpt.style.display='none'; paused=true;}
 function closeMenu(){menu.style.display='none'; paused=false; last=performance.now();}
@@ -1125,7 +1125,7 @@ document.getElementById('goBtn').onclick=()=>{
 // graphics quick-select on the main menu (same setting as the pause-menu options)
 (function(){ const seg=document.getElementById('startGfx'); if(!seg) return;
   const mark=()=>seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.q===gfx));
-  seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ applyGfx(b.dataset.q); mark(); try{markGfx&&markGfx();}catch(e){} }));
+  seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ applyGfx(b.dataset.q); try{localStorage.setItem('ffcGfxUser','1');}catch(e){} gfxUser=true; mark(); try{markGfx&&markGfx();}catch(e){} }));
   mark();
 })();
 
@@ -3178,8 +3178,25 @@ let last=performance.now();
 function fmt(t){const m=Math.floor(t/60),s=Math.floor(t%60);return (m<10?'0':'')+m+':'+(s<10?'0':'')+s;}
 function loop(now){
   requestAnimationFrame(loop);
-  let rdt=(now-last)/1000; last=now; rdt=Math.min(rdt,0.05);
-  const dt=rdt*GAME_SPEED;                 // slowed simulation for a calmer pace
+  let rdt0=(now-last)/1000; last=now; rdt0=Math.min(rdt0,0.1);   // up to 10 fps still runs at full pace
+  autoGfx(rdt0);
+  const nSub = rdt0>0.045 ? 2 : 1;          // a long frame (slow phone) is simulated in 2 steps: real-time pace, stable physics
+  for(let sub=0; sub<nSub; sub++) simFrame(rdt0/nSub, sub===nSub-1);
+  if(menuActive){
+    // slow cinematic orbit over the pitch while the main menu is up
+    menuT+=rdt0; const a=menuT*0.18;
+    camera.position.set(Math.sin(a)*74, 40, Math.cos(a)*56 - 6);
+    camera.lookAt(0,2,0);
+  } else if(celeb) celebCamera(rdt0);
+  else if(pen && pen.camT>0) penaltyCamera(rdt0);
+  else stepCamera(rdt0*GAME_SPEED);
+  updateButtons();
+  drawMini();
+  renderer.render(scene,camera);
+}
+// one simulation step (the render happens once per frame, after the steps)
+function simFrame(rdt, lastSub){
+  const dt=rdt*GAME_SPEED;
 
   if(running && !paused){
     if(kickoffHold>0){
@@ -3274,19 +3291,17 @@ function loop(now){
     if(pen && pen.phase==='live'){ pen.camT-=dt; pen.guessT-=dt; if(pen.camT<=0){ pen=null; penReticle.visible=false; } }
     if(!(pen && pen.phase!=='live') && !celeb) timeLeft-=rdt;   // the clock stops for penalty set-ups and celebrations
     if(timeLeft<=0){ timeLeft=0; running=false; endMatch(); }
-    document.getElementById('tim').textContent=fmt(timeLeft);
+    if(lastSub) document.getElementById('tim').textContent=fmt(timeLeft);
   }
-  if(menuActive){
-    // slow cinematic orbit over the pitch while the main menu is up
-    menuT+=rdt; const a=menuT*0.18;
-    camera.position.set(Math.sin(a)*74, 40, Math.cos(a)*56 - 6);
-    camera.lookAt(0,2,0);
-  } else if(celeb) celebCamera(rdt);
-  else if(pen && pen.camT>0) penaltyCamera(rdt);
-  else stepCamera(dt);
-  updateButtons();
-  drawMini();
-  renderer.render(scene,camera);
+}
+// if the phone can't keep up, step the graphics down by itself (unless you picked the quality yourself)
+let gfxUser=false; try{ gfxUser=localStorage.getItem('ffcGfxUser')==='1'; }catch(e){}
+let afT=0, afN=0, afSum=0;
+function autoGfx(fdt){
+  if(gfxUser || !running || paused || gfx==='baja') return;
+  afT+=fdt; afN++; afSum+=fdt;
+  if(afT>3){ const avg=afSum/afN; afT=0; afN=0; afSum=0;
+    if(avg>1/26){ applyGfx(gfx==='alta'?'media':'baja'); try{ markGfx&&markGfx(); }catch(e){} } }   // under ~26 fps: one step lower
 }
 
 let ended=false;
