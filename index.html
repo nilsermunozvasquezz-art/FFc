@@ -674,7 +674,7 @@ function driveAnim(p, state, speed, dt){
     else switchClip(p, (p.diveDir&&p.diveDir.x<0?'slideL':'slideR'), true, 1.4); // to a corner -> dive/lay out
   }
   else if(state==='fall') switchClip(p,'fall', true, FALL_TS, FALL_START);  // start past the stand-still so he drops at once
-  else if(state==='getup')switchClip(p,'getup',true, GETUP_TS);         // stands back up from the same back-lying pose
+  else if(state==='getup')switchClip(p,'getup',true, GETUP_TS*(p.getupTs||1));         // stands back up from the same back-lying pose
   else if(state==='turnL')switchClip(p,'turnL',true, 1.5);             // sharp turn to the left (in place)
   else if(state==='turnR')switchClip(p,'turnR',true, 1.5);             // sharp turn to the right (in place)
   else if(state==='protest')switchClip(p,'protest',false, 1.1);        // arms-out "¡¿qué?!" at the ref
@@ -2068,13 +2068,14 @@ function resolveTackles(){
     players.forEach(o=>{
       if(o.team===s.team || (o.fall||0)>0 || o.sentOff) return;
       if(s.pos.distanceTo(o.pos) > 2.4) return;   // reach matched to the bigger players
-      o.fall=FALL_DUR; o.vel.set(0,0,0);         // opponent falls — the full knock-down plays out
+      o.fall=FALL_DUR; o.vel.set(0,0,0);         // opponent falls — the full knock-down plays out (shortened below for a plain foul)
       const hadBall = (owner===o || ball.position.distanceTo(o.pos)<3);
       const foul = Math.random() < (hadBall?0.3:0.6);   // mistimed tackles foul more
       if(foul){
         // referee books the tackler; free kick to the fouled team
         const rc=Math.random(), red = rc<0.1, card = rc<0.55;   // ~45% plain fouls (no card) -> quick restart
         if(card) showCard(red?'red':'yellow', s);
+        else { o.fall=Math.min(o.fall, FALL_DUR*0.45); o.quickUp=true; }   // no card: down for a moment, then straight back up
         // players react during the stoppage: the tackler's side argues the call (reclamo),
         // the fouled side is annoyed (molestarse) — only shows while a player is standing still
         const reactDur = !card ? 0 : red?4.2:3.2;
@@ -2158,7 +2159,7 @@ function ballDeflect(){
   const ex=ball.position.x, ez=ball.position.z;         // segment end (after this step)
   const segx=ex-sx, segz=ez-sz; const seg2=segx*segx+segz*segz;
   for(const p of players){
-    if(p===owner || (p.fall||0)>0 || p.sentOff) continue;
+    if(p===owner || (p.fall||0)>0 || (p.getupT||0)>0 || p.sentOff) continue;
     if((p.kickCd||0)>0.45 && p===lastKicker) continue;   // the ball he JUST struck can't bounce off his own body (it pinned keeper kicks)
     if(!p.gk && ball.position.y<1.5 && ballVel.length()<(p===passReceiver?85:48) && !(p.slide>0) && (p.kickCd||0)<=0.3 && (p.chT||0)<=0 && !p.pk2){
       let t2=0; if(seg2>1e-6) t2=THREE.MathUtils.clamp(((p.pos.x-sx)*segx+(p.pos.z-sz)*segz)/seg2,0,1);
@@ -2284,7 +2285,7 @@ function stepPlayer(p,dt){
     const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
     driveAnim(p,'fall',0,dt);
     m.userData.ring.visible=(p===ctrlPlayer());
-    if(p.fall<=0) p.getupT=GETUP_DUR;             // knock-down finished -> stand straight back up
+    if(p.fall<=0){ p.getupT = p.quickUp ? GETUP_DUR*0.5 : GETUP_DUR; p.getupTs = p.quickUp ? 2 : 1; p.quickUp=false; }   // knock-down finished -> stand straight back up
     if(p.slideCd>0)p.slideCd-=dt; if(p.kickCd>0)p.kickCd-=dt;
     return;
   }
@@ -2684,6 +2685,7 @@ function stepPlayer(p,dt){
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
     if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
+  if(!isCtrl && !p.gk && !(p.slide>0)){ if(!p.dSm) p.dSm=desired.clone(); else p.dSm.lerp(desired, Math.min(1,dt*7)); desired.copy(p.dSm); }
   if(desired.lengthSq()>0.001){
     desired.normalize();
     // while a pass/kick facing is locked, DON'T rotate toward movement (keeps the strike pointing where the ball goes)
@@ -2775,9 +2777,10 @@ function stepPlayer(p,dt){
   else if(owner===p && !p.gk && p.speed>3.6 && p.act['pk:Dribble'] && ball.position.y<0.9) state='dribble';   // running WITH the ball
   else if(p.gk && p.speed>0.7 && p.speed<11 && p.act['gk:Goalkeeper_Sidestep'] && Math.abs(p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading))>p.speed*0.6) state='side';   // shuffling across his goal, facing the play
   else if(p.readyClip && !p.gk && owner!==p && p.speed<1.4 && (throwTimer>0 || kickoffHold>0 || awaitKickoffPass || (owner && owner.gk && owner.team!==p.team))) state='ready';
-  else if(p.speed>3.6) state='run';            // break into a run sooner (quicker steps)
-  else if(p.speed>0.6) state='walk';
-  else state='idle';
+  else { const wasRun=/Running_|^run$/.test(p.curAnim||''), wasWalk=p.curAnim==='walk';
+    if(p.speed>(wasRun?2.9:4.0)) state='run';                       // break into a run (and stay in it until he really slows)
+    else if(p.speed>(wasWalk||wasRun?0.35:0.8)) state='walk';
+    else state='idle'; }
   driveAnim(p, state, p.speed, dt);
   m.userData.ring.visible=(p===ctrlPlayer());
 }
@@ -3309,11 +3312,14 @@ function simFrame(rdt, lastSub){
         if(spFade>0){                                             // blackout in progress
           spFade-=dt; setPieceForm=Math.max(setPieceForm,0.3); throwTimer+=dt;
           if(!spFadeSnapped && spFade<0.32){ spFadeSnapped=true;
+            players.forEach(q=>{ if(q.sentOff||q===setPieceTaker) return;
+              if((q.fall||0)>0 || (q.getupT||0)>0){ q.fall=0; q.getupT=0;                // still down: he's up and out of the way too
+                if(!q.spSpot || q.spArr!==false){ const aw=q.pos.clone().sub(ball.position).setY(0); if(aw.lengthSq()<0.01) aw.set(1,0,0); aw.setLength(q.team===throwTeam?6:9.5); q.spSpot=ball.position.clone().setY(0).add(aw); q.spArr=false; } } });
             players.forEach(q=>{ if(q.spSpot && q.spArr===false && !q.sentOff && q!==setPieceTaker && (q.fall||0)<=0){ q.pos.copy(q.spSpot); q.vel.set(0,0,0); q.spArr=true;
               const tb=ball.position.clone().sub(q.pos); if(tb.lengthSq()>0.5) q.heading=Math.atan2(tb.x,tb.z); } });
             document.getElementById('spFade').style.opacity='0'; }
           if(spFade<=0) setPieceForm=0.25;
-        }else if(spQuick && !spFadeDone && setPieceForm>0 && setPieceForm<0.3 && players.some(q=>q.spSpot && !q.sentOff && q!==setPieceTaker && !q.gk && (q.fall||0)<=0 && (q.getupT||0)<=0 && q.pos.distanceTo(q.spSpot)>16)){
+        }else if(spQuick && !spFadeDone && setPieceForm>0 && setPieceForm<0.3 && players.some(q=>!q.sentOff && q!==setPieceTaker && !q.gk && ((q.spSpot && (q.fall||0)<=0 && (q.getupT||0)<=0 && q.pos.distanceTo(q.spSpot)>16) || (((q.fall||0)>0||(q.getupT||0)>0) && q.pos.distanceTo(ball.position)<8)))){
           spFadeDone=true; spFade=0.5; spFadeSnapped=false; players.forEach(q=>{ if(q.spSpot && q.pos.distanceTo(q.spSpot)>3) q.spArr=false; }); document.getElementById('spFade').style.opacity='1';   // quick blackout, everyone set
         }else if(!spQuick && setPieceForm>0 && setPieceForm<0.3 && !spFadeDone && players.some(q=>q.spArr===false && !q.sentOff && (q.fall||0)<=0 && (q.getupT||0)<=0)){
           setPieceForm=0.3; throwTimer+=dt; spHoldT+=dt;         // still running into place: wait for them a moment...
