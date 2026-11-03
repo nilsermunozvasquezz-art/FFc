@@ -625,8 +625,8 @@ function driveAnim(p, state, speed, dt){
       if(fresh || !p.runBase || Math.random()<0.5){ const r=Math.random(); p.runBase = (!p.act['pk:Running_3']||r<0.5) ? 'run' : (r<0.75?'pk:Running_3':'pk:Running_4'); }
       p.runSwapT=5+Math.random()*6; }
     if(p.act['pk:Running_1']){                                               // flat out: the quick sprint run (with hysteresis)
-      if(!p.runFast && speed>14.5){ p.runFast=true; p.runFastClip=Math.random()<0.5?'pk:Running_1':'pk:Running_2'; }
-      else if(p.runFast && speed<13) p.runFast=false; }
+      if(!p.runFast && speed>13.8){ p.runFast=true; p.runFastClip=Math.random()<0.5?'pk:Running_1':'pk:Running_2'; }
+      else if(p.runFast && speed<12.4) p.runFast=false; }
     p.runClip = p.runFast ? p.runFastClip : p.runBase;
     const nat = (p.runClip==='run' ? 13.0 : /Running_[12]/.test(p.runClip) ? 13.2 : 9.9) / 1.12;   // measured natural speeds, a touch livelier cadence
     switchClip(p,p.runClip,false,THREE.MathUtils.clamp(speed/nat,0.8,p.runClip==='run'?1.9:2.1)); }
@@ -642,7 +642,7 @@ function driveAnim(p, state, speed, dt){
   else if(state==='tinwait'){ holdClip(p,'pk:Throw_In',0.05,dt); return; }
   else if(state==='ready') switchClip(p,p.readyClip,false,1.0,Math.random()*8);      // on his toes, waiting for the restart
   else if(state==='dribble'){
-    const DR=['pk:Dribble','pk:Dribble_1'], FR=['pk:Running_1','pk:Running_2'], fast=p.act['pk:Running_1'] && speed>(FR.includes(p.dribClip)?14:16);   // hysteresis: no flicker at the threshold
+    const DR=['pk:Dribble','pk:Dribble_1'], FR=['pk:Running_1','pk:Running_2'], fast=p.act['pk:Running_1'] && speed>(FR.includes(p.dribClip)?14.5:16.5);   // hysteresis: no flicker at the threshold
     const inSet=DR.includes(p.curAnim)||FR.includes(p.curAnim);
     if(!p.dribClip || !inSet || (fast && !FR.includes(p.dribClip) && !p.dribFastLock) || (!fast && FR.includes(p.dribClip) && !p.dribMix)){
       if(fast) p.dribClip=FR[Math.random()<0.5?0:1];
@@ -1187,8 +1187,11 @@ function directionalPassTarget(pl, jd){
   players.forEach(q=>{ if(q.team!==pl.team||q===pl||q.sentOff) return;
     if(isOffside(q,pl.team)) return;                         // don't aim a pass into an offside mate
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1.5) return; to.normalize();
-    const align=to.dot(jd); if(align<0.55) return;          // only mates close to where you're pointing
-    const sc=align*12 - dist*0.04;                          // alignment dominates -> the pass goes where you aim
+    const align=to.dot(jd); if(align<0.6) return;           // only mates close to where you're pointing
+    let md=99; players.forEach(o=>{ if(o.team!==pl.team&&!o.sentOff) md=Math.min(md,o.pos.distanceTo(q.pos)); });
+    let lane=0; players.forEach(o=>{ if(o.team===pl.team||o.sentOff) return; const rel=o.pos.clone().sub(pl.pos).setY(0), al=rel.dot(to);
+      if(al>1.5 && al<dist-1){ const pp=rel.addScaledVector(to,-al).length(); if(pp<2.0) lane=Math.max(lane,2.0-pp); } });
+    const sc=align*14 - dist*0.035 + Math.min(md,8)*0.35 - lane*2.5 - (q.gk?3:0);   // where you aim first, then the freer, cleaner option
     if(sc>bb){bb=sc;best=q;}
   });
   return best;
@@ -1274,13 +1277,20 @@ function doAction(which, power){
       const toGoal=new THREE.Vector3(0,0,gz).sub(ball.position).setY(0);
       if(toGoal.lengthSq()<0.01) toGoal.set(0,0,pl.team===0?1:-1);   // guard: never a zero (straight-up) shot
       toGoal.normalize();
-      let dir;
+      // pick a real SPOT on goal: the joystick chooses the side (where it points along the goal line); no aim -> the corner away from the keeper
+      const okp=players.find(q=>q.gk&&q.team!==pl.team&&!q.sentOff);
+      let tx;
       if(moveDir.lengthSq()>0.05){
         const jd=new THREE.Vector3(moveDir.y,0,-moveDir.x).normalize();
-        dir=jd.multiplyScalar(1.0).add(toGoal.multiplyScalar(0.18)).normalize();  // mostly where you aim, tiny goal pull
-      }else dir=toGoal;                      // no aim -> straight at goal (not random)
+        const dz=gz-ball.position.z;
+        if(jd.z*Math.sign(dz)>0.15) tx=ball.position.x + jd.x/jd.z*dz;            // where your aim line crosses the goal line
+        else tx=Math.sign(jd.x||1)*GOAL_W/2;                                      // pointing sideways: that corner
+      } else tx = okp ? (okp.pos.x>=0?-1:1)*GOAL_W/2 : 0;
+      tx=THREE.MathUtils.clamp(tx,-(GOAL_W/2-1.1),GOAL_W/2-1.1) + (Math.random()-0.5)*(0.6+power*1.2);   // harder = a bit less precise
+      const ty=THREE.MathUtils.clamp(0.7+power*2.4+(Math.random()-0.5)*0.8, 0.4, GOAL_H-0.6);
+      const dir=new THREE.Vector3(tx,0,gz).sub(ball.position).setY(0).normalize();
       pl.heading=Math.atan2(dir.x,dir.z); pl.faceLock=0.6; ballAtRightFoot(pl);   // face + strike from the kicking boot
-      ballVel.copy(dir).multiplyScalar(33+41*power); ballVel.y=2.8+2.8*power;
+      aimBallAt(tx,ty,gz,33+41*power);
       showPower(pl, power);
     }else{                      // ELEVADO (lob/cross) — toward where the joystick points
       const dir=aimDir(pl);
@@ -1288,11 +1298,11 @@ function doAction(which, power){
       const mate=directionalPassTarget(pl,dir);
       if(mate){                                   // a cross dropped onto his HEAD, so he can head it or try a chilena
         const tgt=mate.pos.clone().addScaledVector(mate.vel||new THREE.Vector3(),0.35), to=tgt.sub(ball.position).setY(0); const d=to.length();
-        const T=THREE.MathUtils.clamp(d/(22+11*power),0.8,1.65); to.normalize();
+        const T=THREE.MathUtils.clamp(d/(27+14*power),0.65,1.4); to.normalize();   // firmer, quicker cross
         const kk=-Math.log(AIR_FR), corr=kk>1e-4?(1-Math.exp(-kk*T))/(kk*T):1;
         ballVel.copy(to).multiplyScalar(d/T/corr); ballVel.y=(4.6-ball.position.y)/T+GRAV*T/2;
         passReceiver=mate; passSeekT=T+0.3; if(pl.team===0) ctrl=players.indexOf(mate);
-      } else { ballVel.copy(dir).multiplyScalar(20+22*power); ballVel.y=11+8.5*power; }   // stronger lob that climbs higher
+      } else { ballVel.copy(dir).multiplyScalar(25+27*power); ballVel.y=12+9*power; }   // stronger lob that climbs higher
       showPower(pl, power);
     }
     }
@@ -1316,7 +1326,7 @@ function cpuTryKick(p){
   const onAngle=Math.abs(ball.position.x)<GOAL_W+5;
   // take the shot on when there's a sight of goal (so the rival actually creates chances)
   if((p.holdT||0)>0.3 && Math.random()<(redCombo>=2?0.7:0.5) && cpuThroughBall(p)) return true;   // a runner in behind: slide him through on goal
-  if(onAngle && (dg<26 || (dg<36 && Math.random()<0.5) || (redCombo>=2 && dg<44 && Math.random()<0.06))){   // after a few passes: finish it
+  if(onAngle && (dg<30 || (dg<38 && Math.random()<0.5) || (redCombo>=2 && dg<44 && Math.random()<0.06))){   // near the box: SHOOT
     // aim for the corner AWAY from the keeper so it's a real test, not straight at them
     const gk=players.find(q=>q.team===0&&q.gk);
     const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
@@ -1974,7 +1984,7 @@ function resolveTackles(){
       if(foul){
         // referee books the tackler; free kick to the fouled team
         const red = Math.random()<0.17;
-        showCard(red?'red':'yellow');
+        showCard(red?'red':'yellow', s);
         // players react during the stoppage: the tackler's side argues the call (reclamo),
         // the fouled side is annoyed (molestarse) — only shows while a player is standing still
         const reactDur = red?4.2:3.2;
@@ -1983,10 +1993,7 @@ function resolveTackles(){
           if(q.pos.distanceTo(o.pos)>22 || q.gk) return;
           if(q.team===s.team){ q.reactT=reactDur*0.85; q.reactType='protest'; }
           else { q.reactT=reactDur*0.85; q.reactType='anger'; } });
-        if(red){ s.sentOff=true; if(owner===s) owner=null;      // red card -> off the pitch
-          assignRoles();                                        // team reshuffles to cover the man down
-          if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
-        }
+        if(red){ s.redPending=true; if(owner===s) owner=null; }   // he walks off only once the referee has shown him the red
         // quick whistle, then HOLD the restart while the fouled player's full fall + stand-up plays out,
         // and only then let the free kick be taken by the team that was fouled.
         const ft=o.team, fx=o.pos.x, fz=o.pos.z;
@@ -2033,7 +2040,7 @@ function pressSteal(){
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
 function cpuSteal(dtS){
   if(awaitKickoffPass||koGrace>0||throwTimer>0||kickoffHold>0||deadTimer>0) return;   // no stealing during any restart
-  if(!(owner && owner.team===0) || owner.pk2) return;
+  if(!(owner && owner.team===0) || owner.pk2 || owner.gk) return;   // never rob the keeper
   const carrier=owner; dtS=dtS||1/60;
   for(const p of players){
     if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
@@ -2211,6 +2218,7 @@ function stepPlayer(p,dt){
     return;
   }
   // reacting to a foul during the stoppage: stand, face the ref and protest / show anger
+  if(p===bookee && cardTimer>0 && !p.sentOff && (p.fall||0)<=0 && owner!==p){ p.reactT=Math.max(p.reactT||0,0.3); p.reactType='protest'; }   // waits for his card
   if((p.reactT||0)>0 && (deadTimer>0||cardTimer>0) && owner!==p){
     p.reactT-=dt; p.vel.multiplyScalar(0.4); p.pos.addScaledVector(p.vel,dt);
     const toRef=refPos.clone().sub(p.pos).setY(0);
@@ -2433,6 +2441,8 @@ function stepPlayer(p,dt){
       desired.copy(ic.pt).sub(p.pos).setY(0); if(desired.length()<0.6) desired.set(0,0,0);
     }else if(myIc && myIc.p===p && !owner && throwTimer<=0 && !(passReceiver && passReceiver.team===p.team)){
       desired.copy(myIc.pt).sub(p.pos).setY(0);          // loose ball / rival pass: the man who gets there first goes for it
+    }else if(owner && owner.gk && owner.team!==p.team && inOwnBox(owner) && p.pos.distanceTo(owner.pos)<16){
+      desired.copy(p.pos).sub(owner.pos).setY(0);          // the keeper has it in his hands: back off and let him play it
     }else if(recvMark[p.team]===p && passReceiver && !owner && throwTimer<=0){
       const ogz=p.team===0?-HALF_L:HALF_L, r=passReceiver.pos;            // close the receiver down, goal-side
       const gs=new THREE.Vector3(0,0,ogz).sub(r).setY(0).setLength(2.6);
@@ -2482,7 +2492,7 @@ function stepPlayer(p,dt){
       let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
       // in the attacking third with space, the CPU carries the ball in to make a chance instead of passing straight away
       const inAttack = p.team===1 && ball.position.z < -HALF_L+52;
-      const hold=(p.holdT||0), need = inAttack ? (redCombo<3 ? (opD<3.2?0.25:0.4) : (opD<2.4?0.3:1.2)) : (opD<3.2 ? 0.18 : 0.45);   // tiki-taka, then drive at goal   // quick one-touch combinations in the final third
+      const hold=(p.holdT||0), need = inAttack ? (redCombo<3 ? (opD<3.2?0.25:0.4) : (opD<2.4?0.3:1.2)) : (opD<3.6 ? 0.2 : 0.55);   // keep it moving in midfield, tiki-taka near the box, then drive at goal   // quick one-touch combinations in the final third
       // only the CPU (red) auto-passes; your blue players never kick on their own — you decide
       if(!acted && p.team===1 && hold>need) acted=aiTryPass(p);
       if(acted) desired.set(0,0,0);
@@ -2547,19 +2557,19 @@ function stepPlayer(p,dt){
   }
 
   // speed
-  let spd = p.gk?10.0:(isCtrl?(sprint?17.8:12.9):(p.team===1?13.2:12.0));   // a bit quicker all round
+  let spd = p.gk?10.0:(isCtrl?(sprint?19.6:14.2):(p.team===1?14.4:13.2));   // quicker all round
   if(deadTimer>0) spd=Math.min(spd,5);      // relaxed jog while the ball is dead
   if(p.slide>0) spd=11.5;                   // a short, sharp slide — not a long one
   if(p.gk && p.gkReact) spd=Math.max(spd,25);    // keeper springs across to cover a shot / sweep (faster)
   if((p.dive||0)>0){ const fly=!p.gkClip || (p.dive<=p.gkFlyFrom && p.dive>=p.gkFlyTo); if(fly) spd=Math.max(spd,p.gkClip?p.gkLunge:34); }   // keeper dive lunge
   if(isCtrl && pressTimer>0) spd=Math.max(spd,18);   // press charge
   const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
-  if(owner===p && p.team===1) spd=Math.max(spd,14.0);  // red drives at you with the ball
-  if(owner===p && isCtrl) spd=sprint?19.5:14.8;         // YOU run quicker with the ball at your feet
-  if(redDefend) spd=Math.max(spd,15.6);                // red hustles hard to win it back
+  if(owner===p && p.team===1) spd=Math.max(spd,15.0);  // red drives at you with the ball
+  if(owner===p && isCtrl) spd=sprint?21.0:16.0;         // YOU run quicker with the ball at your feet
+  if(redDefend) spd=Math.max(spd,16.6);                // red hustles hard to win it back
   // a defender caught UPFIELD of the ball sprints back to recover goal-side (both teams) — so they get back to defend
   const _gd = p.team===0?1:-1;
-  if(!p.gk && possTeam!==p.team && (p.pos.z-ball.position.z)*_gd > 2) spd=Math.max(spd,14.8);
+  if(!p.gk && possTeam!==p.team && (p.pos.z-ball.position.z)*_gd > 2) spd=Math.max(spd,16.0);
   if(owner===p && p.team===1 && pressTimer>0) spd*=0.82; // pressured carrier loses a step
   // keepers ARRIVE at their spot (ease off when close) instead of overshooting at full speed and
   // jittering on the line — not while diving, when the lunge must stay at full pace
@@ -2699,7 +2709,9 @@ function playerBallInteraction(dt){
   // while a set-piece or kickoff is being HELD (not yet taken), the taker keeps the ball on their
   // feet and NOBODY can snatch it — no nearest-grab, no keeper poach, no steal
   const spHold = (throwTimer>0 && setPieceTaker) ? setPieceTaker
-               : (awaitKickoffPass && kickoffTaker) ? kickoffTaker : (players.find(q=>(q.tin&&!q.tin.done)||(q.gkThr&&!q.gkThr.done&&owner===q))||null);   // mid throw-in / keeper throw: nobody can take it off him
+               : (awaitKickoffPass && kickoffTaker) ? kickoffTaker
+               : (owner && owner.gk && inOwnBox(owner) && ((owner.gkKickT||0)>0 || owner.gkThr || ball.position.y>0.9)) ? owner      // ball in the keeper's hands / mid-clearance: untouchable
+               : (players.find(q=>(q.tin&&!q.tin.done)||(q.gkThr&&!q.gkThr.done&&owner===q))||null);   // mid throw-in / keeper throw: nobody can take it off him
   if(spHold){
     owner=spHold; teamHasBall=!!(owner.team===0); lastTouch=owner.team;
   }else{
@@ -2988,7 +3000,14 @@ function doGoal(team){
 }
 
 let foulSpot=new THREE.Vector3();
-function showCard(color){
+let bookee=null;                      // the player being booked (the one who committed the foul)
+function sendOff(s){
+  s.redPending=false; s.sentOff=true; if(owner===s) owner=null;
+  assignRoles();                                        // team reshuffles to cover the man down
+  if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
+}
+function showCard(color, who){
+  bookee = who||null;
   cardSevere = (color==='red');
   cardShown = 0;
   cardTimer = cardSevere?6.0:5.5;        // hard cap: get over there + show the card (ends early once shown long enough)
@@ -3009,7 +3028,9 @@ function stepReferee(dt){
   const booking = cardTimer>0;
   let want;
   if(booking){
-    want = foulSpot.clone().add(new THREE.Vector3(2.4,0,-2.4));
+    const bp = (bookee && !bookee.sentOff) ? bookee.pos : foulSpot;           // straight to the player who made the foul
+    const side = refPos.clone().sub(bp).setY(0); if(side.lengthSq()<0.01) side.set(1,0,-1); side.setLength(2.6);
+    want = bp.clone().setY(0).add(side);
   }else{
     // keep a smart diagonal distance from the ball, leading slightly where play heads,
     // and never stand right on top of the ball or the carrier
@@ -3029,7 +3050,7 @@ function stepReferee(dt){
   refVel.lerp(desiredV, Math.min(1,dt*2.5));
   refPos.addScaledVector(refVel,dt);
   ref.position.set(refPos.x,FOOT_LIFT,refPos.z);
-  const faceAt=(booking?foulSpot:ball.position).clone().sub(refPos); faceAt.y=0;
+  const faceAt=(booking?((bookee&&!bookee.sentOff)?bookee.pos:foulSpot):ball.position).clone().sub(refPos); faceAt.y=0;
   if(faceAt.lengthSq()>0.02) ref.rotation.y=Math.atan2(faceAt.x,faceAt.z);
   const spd=refVel.length();
   // walk over to the player first; only once there, stop and give the stern card gesture
@@ -3045,7 +3066,9 @@ function stepReferee(dt){
     refCard.position.copy(_rv2); refCard.position.y+=0.08; refCard.position.z+=0.12;  // card face just in front of the palm
   }
   refCard.visible = booked;                       // card only shows once he arrives and raises it
-  if(booked){ cardShown+=dt; if(cardShown>=(cardSevere?2.4:1.7)) cardTimer=Math.min(cardTimer,dt); }  // end soon after it's shown
+  if(booked){ cardShown+=dt; if(cardShown>=(cardSevere?2.4:1.7)) cardTimer=Math.min(cardTimer,dt);
+    if(bookee && bookee.redPending && cardShown>=1.2) sendOff(bookee); }    // red shown: now he walks off
+  if(!booking && bookee && bookee.redPending) sendOff(bookee);           // (safety: never leave a red un-served)
   if(cardTimer>0){ cardTimer-=dt; if(cardTimer<=0){ refCard.visible=false; refCard.position.set(0.45,1.65,0.15); } }
 }
 
