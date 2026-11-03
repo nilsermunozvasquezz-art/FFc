@@ -1822,6 +1822,14 @@ function ballDeflect(){
   for(const p of players){
     if(p===owner || (p.fall||0)>0 || p.sentOff) continue;
     if((p.kickCd||0)>0.45 && p===lastKicker) continue;   // the ball he JUST struck can't bounce off his own body (it pinned keeper kicks)
+    if(!p.gk && ball.position.y<1.5 && ballVel.length()<(p===passReceiver?85:48) && !(p.slide>0) && (p.kickCd||0)<=0.3 && (p.chT||0)<=0 && !p.pk2){
+      let t2=0; if(seg2>1e-6) t2=THREE.MathUtils.clamp(((p.pos.x-sx)*segx+(p.pos.z-sz)*segz)/seg2,0,1);
+      const qx=sx+segx*t2-p.pos.x, qz=sz+segz*t2-p.pos.z, qd=Math.hypot(qx,qz);
+      if(qd<POSSESS+0.15){                                // he gets a foot to it: cushion it in front of him
+        const ux=qd>0.01?qx/qd:Math.sin(p.heading), uz=qd>0.01?qz/qd:Math.cos(p.heading);
+        ball.position.x=p.pos.x+ux*1.25; ball.position.z=p.pos.z+uz*1.25; ball.position.y=Math.min(ball.position.y,BALL_R+0.2);
+        ballVel.multiplyScalar(0.18); ballVel.y=0; p.trapT=0.3; continue; }
+    }
     const rad   = p.gk ? 1.9 : (P_R+BALL_R+0.2);        // body size (keepers are a bigger wall)
     const maxY  = p.gk ? GOAL_H : 2.2;
     const minSp = p.gk ? 1.2 : 2.5;                      // even a slowish ball bounces off a body (no pass-through)
@@ -1845,6 +1853,46 @@ function ballDeflect(){
   }
 }
 
+// ---- where the ball WILL be (same physics as stepBall), refreshed once per frame: receivers meet it on
+// its path, the nearest man of each side goes to cut it out, and the keeper reads through balls.
+const BP_N=56, BP_H=0.05, bpath=[]; for(let i=0;i<BP_N;i++) bpath.push(new THREE.Vector3());
+let icpt=[null,null], recvMark=[null,null];
+function predictBallPath(){
+  let x=ball.position.x,y=ball.position.y,z=ball.position.z,vx=ballVel.x,vy=ballVel.y,vz=ballVel.z; const h=BP_H;
+  for(let i=0;i<BP_N;i++){ vy-=GRAV*h; x+=vx*h; y+=vy*h; z+=vz*h;
+    if(y<BALL_R){ y=BALL_R; const landing=Math.abs(vy)>1.3; vy*=-REST; if(!landing||Math.abs(vy)<1.0)vy=0;
+      if(landing){ vx*=BOUNCE_FR; vz*=BOUNCE_FR; } const fr=Math.pow(GROUND_FR,h); vx*=fr; vz*=fr; }
+    else { const fr=Math.pow(AIR_FR,h); vx*=fr; vz*=fr; }
+    bpath[i].set(x,y,z); }
+}
+// earliest point on the ball's path this player can reach while it's still playable (below ~hip height)
+function interceptFor(p, spd){
+  for(let i=0;i<BP_N;i++){ const b=bpath[i]; if(b.y>1.7) continue; const t=(i+1)*BP_H;
+    const d=Math.hypot(b.x-p.pos.x,b.z-p.pos.z); if(Math.max(0,d-1.4)/spd+0.12<=t) return {pt:b,t}; }
+  return {pt:bpath[BP_N-1], t:99};
+}
+function computeIntercepts(){
+  icpt=[null,null]; recvMark=[null,null];
+  if(owner || deadTimer>0 || throwTimer>0 || kickoffHold>0 || awaitKickoffPass || pen || celeb) return;
+  predictBallPath();
+  if(Math.hypot(ballVel.x,ballVel.z)<2.5 && ball.position.y<1.7){            // a dead, loose ball: the nearest of each side goes for it
+    for(const tm of [0,1]){ let bd=1e9, bq=null;
+      players.forEach(q=>{ if(q.team!==tm||q.gk||q.sentOff||(q.fall||0)>0||(q.getupT||0)>0) return; const d=q.pos.distanceTo(ball.position); if(d<bd){bd=d;bq=q;} });
+      if(bq && bd<30) icpt[tm]={p:bq,pt:ball.position.clone(),t:bd/11.5}; }
+    return;
+  }
+  for(const tm of [0,1]){
+    let best=null;
+    players.forEach(q=>{ if(q.team!==tm||q.gk||q.sentOff||(q.fall||0)>0||(q.getupT||0)>0||q.slide>0) return;
+      if(q===lastKicker && (q.kickCd||0)>0.3) return;                        // the passer doesn't chase his own pass
+      const r=interceptFor(q,11.5); if(!best||r.t<best.t) best={p:q,pt:r.pt,t:r.t}; });
+    icpt[tm]=best;
+    // the defender nearest the intended receiver closes him down while the ball travels
+    if(passReceiver && passReceiver.team!==tm){ let md=1e9, mk=null;
+      players.forEach(q=>{ if(q.team!==tm||q.gk||q.sentOff||(best&&q===best.p)) return; const d=q.pos.distanceTo(passReceiver.pos); if(d<md){md=d;mk=q;} });
+      if(md<16) recvMark[tm]=mk; }
+  }
+}
 /* Keeper read: roll the ball forward (same physics as stepBall) to where it crosses this
    team's goal line, so the keeper can get across and dive in time instead of reacting late. */
 function predictAtGoalLine(team){
@@ -1966,7 +2014,8 @@ function stepPlayer(p,dt){
     desired.set(moveDir.y, 0, -moveDir.x);
     // a pass is coming to you and you're not steering -> drift to meet the ball so it connects
     if(passReceiver===p && passSeekT>0 && owner!==p && desired.lengthSq()<0.05){
-      desired.copy(ball.position).sub(p.pos).setY(0);
+      const ic=icpt[p.team] ? interceptFor(p,12) : {pt:ball.position};
+      desired.copy(ic.pt).sub(p.pos).setY(0); if(desired.length()<0.6) desired.set(0,0,0);
     }
     // PRESIONAR: if you're not steering, charge the rival carrier (or the ball) to dispossess
     if(pressTimer>0 && desired.lengthSq()<0.05){
@@ -1976,8 +2025,14 @@ function stepPlayer(p,dt){
   }else if(p.gk){
     // goalkeeper: hold the line and track the ball; read the shot's path and dive to cut it out
     const gz=p.team===0?-HALF_L+1.2:HALF_L-1.2;
-    let tx=THREE.MathUtils.clamp(ball.position.x*.9,-GOAL_W/2-0.3,GOAL_W/2+0.3);  // stay centered on the ball
-    let tz=gz;
+    // ANGLE PLAY: he stands on an arc a few metres in front of the middle of his goal, on the line from the goal
+    // centre to the ball (rotating round his area as the ball moves) — never out by the posts, never on the line
+    const glz=p.team===0?-HALF_L:HALF_L, fdir=p.team===0?1:-1;
+    const bOut=Math.max((ball.position.z-glz)*fdir,0.8), bDist=Math.hypot(ball.position.x,bOut);
+    let ang=Math.atan2(ball.position.x,bOut)*(1-0.55*THREE.MathUtils.clamp((bDist-35)/40,0,1));   // ball far away: drift back to the middle
+    const rr=THREE.MathUtils.clamp(2.4+bDist*0.05,2.8,5.2);                                        // further off his line when play is far
+    let tx=THREE.MathUtils.clamp(Math.sin(ang)*rr,-(GOAL_W/2-1.6),GOAL_W/2-1.6);                   // stays inside the posts
+    let tz=glz+fdir*Math.max(1.6,Math.cos(ang)*rr);
     p.gkReact=false;
     const pred=predictAtGoalLine(p.team);
     if(pen && pen.guess && pen.keeper===p && pen.guessT>0 && pred){ pred.x=pen.guess.x; pred.y=pen.guess.y; }   // penalty: he GUESSES
@@ -1990,7 +2045,7 @@ function stepPlayer(p,dt){
       // high, dropping ball -> come off the line to claim it; low/ras drive -> hug the line and get across
       const highBall = pred.y>2.2;
       const out = highBall ? Math.min(5.5, pred.t*2.6) : Math.min(1.4, pred.t*0.6);
-      tz = gz + (p.team===0?out:-out);
+      tz = highBall ? gz + (p.team===0?out:-out) : p.pos.z;     // low drive: set where he is (don't back-pedal onto the line)
       // choose the save: JUMP-AND-CATCH when the ball is high & roughly at him; DIVE to the side for a
       // ball heading toward a corner/post; a low ball right at him he just blocks standing.
       if(pred.t<1.2 && (p.dive||0)<=0){                 // commits to the save sooner (quicker reflexes)
@@ -2011,7 +2066,13 @@ function stepPlayer(p,dt){
     // sweeper-keeper: now and then rush OUT to cut a counter — a loose ball or a rival carrier
     // that has got in behind the defence, with no teammate goal-side of it
     let swept=false;
-    if(!shot){
+    if(!shot && !owner && (icpt[0]||icpt[1]) && !(passReceiver && passReceiver.team===p.team)){
+      const gk=interceptFor(p,10.5), foe=icpt[1-p.team]||{t:99}, glz2=p.team===0?-HALF_L:HALF_L;
+      const ptOut=Math.abs(gk.pt.z-glz2);
+      if(gk.t<foe.t-0.15 && ptOut<BOX_DEPTH+7 && Math.abs(gk.pt.x)<BOX_HALF_W+2 && gk.t<3){   // he gets there first: go!
+        swept=true; p.gkReact=true; p.gkDir=0; tx=gk.pt.x; tz=gk.pt.z; }
+    }
+    if(!shot && !swept){
       const goalZ=p.team===0?-HALF_L:HALF_L;
       const ballToGoal=Math.abs(ball.position.z-goalZ);
       const oppOrLoose = !owner || owner.team!==p.team;
@@ -2045,7 +2106,8 @@ function stepPlayer(p,dt){
       const spVs = setPieceForm>0 && throwTeam!==p.team && bd<65;
       if(shot || swept || near || owner===p || bd<17) p.gkDir=0;
       else if(!((p.gkDir||0)>0) && (p.gkDirCd||0)<=0 && (p.dive||0)<=0 && p.speed<5 && desired.length()<3 && ((oppBall && bd>19) || bd>38 || spVs) && GK['Goalkeeper_Directing']){
-        p.gkDir=3.6; p.gkDirCd=5+Math.random()*5;
+        p.gkDir=3.6; p.gkDirCd=5+Math.random()*5; p.vel.set(0,0,0);
+        { const tb=ball.position.clone().sub(p.pos); if(tb.lengthSq()>1) p.heading=Math.atan2(tb.x,tb.z); }   // squared up to the play, not the stands
         p.gkDirClip='gk:'+(Math.random()<0.5?'Goalkeeper_Directing':'Goalkeeper_Directing_1'); playGk(p,p.gkDirClip,1.0,0.8);
       }
       if((p.gkDir||0)>0){ const dl=desired.length();
@@ -2113,9 +2175,17 @@ function stepPlayer(p,dt){
     bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
     // forwards hold the offside line when we attack, except on a rare timed run in behind
     if(weHave && deepFwd && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
+    const myIc=icpt[p.team];
     if(passReceiver===p && passSeekT>0 && owner!==p && throwTimer<=0){
-      // a pass is coming to me: move to meet the ball so it connects instead of running past it
-      desired.copy(ball.position).sub(p.pos).setY(0);
+      // a pass is coming to me: get to the spot ON ITS PATH and wait for it, facing the ball (not chasing it)
+      const ic=icpt[p.team] ? interceptFor(p,11.5) : {pt:ball.position};
+      desired.copy(ic.pt).sub(p.pos).setY(0); if(desired.length()<0.6) desired.set(0,0,0);
+    }else if(myIc && myIc.p===p && !owner && throwTimer<=0 && !(passReceiver && passReceiver.team===p.team)){
+      desired.copy(myIc.pt).sub(p.pos).setY(0);          // loose ball / rival pass: the man who gets there first goes for it
+    }else if(recvMark[p.team]===p && passReceiver && !owner && throwTimer<=0){
+      const ogz=p.team===0?-HALF_L:HALF_L, r=passReceiver.pos;            // close the receiver down, goal-side
+      const gs=new THREE.Vector3(0,0,ogz).sub(r).setY(0).setLength(1.6);
+      desired.set(r.x+gs.x-p.pos.x,0,r.z+gs.z-p.pos.z);
     }else if(throwTimer>0){
       // set-piece: players shuffle depending on the restart and whether it's for or against us.
       // Taking side pushes UP on a throw-in / free kick (attack); the other side drops BACK to defend.
@@ -2231,8 +2301,10 @@ function stepPlayer(p,dt){
   // jittering on the line — not while diving, when the lunge must stay at full pace
   if((p.pkT||0)>0) spd=0;                                   // follow-through after the penalty
   if(p.gk && (p.gkKickT||0)>0) spd = (!p.gkKicked && p.gkKickT>p.gkKickHit) ? p.gkKickRun : 0;   // drop-kick run-up pace, then planted
+  p._dRaw=desired.length();
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
-    if(dl<0.25) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
+    if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
+    if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
   if(desired.lengthSq()>0.001){
     desired.normalize();
     // while a pass/kick facing is locked, DON'T rotate toward movement (keeps the strike pointing where the ball goes)
@@ -2249,6 +2321,12 @@ function stepPlayer(p,dt){
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
   }
   if((p.faceLock||0)>0) p.faceLock-=dt;                          // count down the facing lock
+  { let face=false;
+    if(p.gk && !((p.dive||0)>0) && !((p.gkKickT||0)>0) && owner!==p && (p.faceLock||0)<=0 && !(p.gkReact && p._dRaw>4)) face=true;
+    if(!p.gk && passReceiver===p && owner!==p && (p.faceLock||0)<=0 && p._dRaw<2 && ball.position.distanceTo(p.pos)<26) face=true;
+    if(face){ const tb=ball.position.clone().sub(p.pos); if(tb.x*tb.x+tb.z*tb.z>0.5){
+      const th=Math.atan2(tb.x,tb.z); let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
+      p.heading+=dh*Math.min(1,dt*9); } } }
   p.pos.addScaledVector(p.vel,dt);
   p.pos.x=THREE.MathUtils.clamp(p.pos.x,-HALF_W-1,HALF_W+1);
   p.pos.z=THREE.MathUtils.clamp(p.pos.z,-HALF_L-3,HALF_L+3);
@@ -2752,6 +2830,7 @@ function loop(now){
         }
       }
       computeDefRoles();                 // assign press/cover/outlet by current positions (rotates each frame)
+      computeIntercepts();               // where the loose ball / pass is going, and who gets there first
       players.forEach(p=>stepPlayer(p,dt));
       aerialCheck();                     // high ball reaching a player -> header (shot/pass/clear) or chilena
       separatePlayers();
