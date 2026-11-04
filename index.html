@@ -3204,15 +3204,15 @@ function stepReferee(dt){
 const camState={x:HALF_W+30,y:23,z:0};
 function stepCamera(dt){
   const z=(typeof camZoom==='number')?camZoom:1;
-  const tx=ball.position.x*0.5 + 64*z;
-  const tz=THREE.MathUtils.clamp(ball.position.z*0.85,-HALF_L*0.78,HALF_L*0.78);
-  const ty=27*z;
+  const tx=ball.position.x*0.62 + 42*z;                              // closer: players read much bigger on screen
+  const tz=THREE.MathUtils.clamp(ball.position.z*0.9,-HALF_L*0.85,HALF_L*0.85);
+  const ty=18.5*z;
   camState.x+=(tx-camState.x)*Math.min(1,dt*1.8);
   camState.z+=(tz-camState.z)*Math.min(1,dt*2.2);
   camState.y+=(ty-camState.y)*Math.min(1,dt*1.8);
   camera.position.set(camState.x,camState.y,camState.z);
-  camState.lx=(camState.lx||0)+(ball.position.x*0.5-6-(camState.lx||0))*Math.min(1,dt*2);
-  camera.lookAt(camState.lx, 1.4, camState.z*0.92);
+  camState.lx=(camState.lx||0)+(ball.position.x*0.62-5-(camState.lx||0))*Math.min(1,dt*2);
+  camera.lookAt(camState.lx, 1.6, camState.z*0.95);
   sun.position.set(camState.lx+38,78,camState.z+26); sun.target.position.set(camState.lx,0,camState.z); sun.target.updateMatrixWorld();
 }
 
