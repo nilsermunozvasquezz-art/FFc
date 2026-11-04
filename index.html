@@ -598,6 +598,7 @@ function gkStartSave(p, pred, tz, high, comingOut){
   else if(a>0.9)  name=pick('Goalkeeper_Catch','Goalkeeper_Catch_1');                                 // shuffle across and catch
   else            name=pick('Goalkeeper_Catch_2','Goalkeeper_Catch_3');                               // straight at him
   const m=GK[name].m, T=Math.max(0.15,pred.t);
+  if(T > m.tc*1.08 + 0.04){ p.heading=Math.atan2(bv.x,bv.z); return true; }       // too early: stay set and go a beat later (contact frame on the ball)
   const ts=THREE.MathUtils.clamp(m.tc/T,1.0,2.4), st=Math.max(0,m.tc-T*ts);
   const D=(m.d-st)/ts;
   p.gkClip='gk:'+name; p.gkTs=ts; p.dive=p.diveMax=D;
@@ -895,7 +896,13 @@ function makeLinesman(sideSign){
 const linesmen=[makeLinesman(1),makeLinesman(-1)];
 linesmen.forEach(l=>l.mesh.position.set(l.side*(HALF_W+1.6),FOOT_LIFT,0));
 function stepLinesmen(dt){
-  linesmen.forEach(l=>{
+  // penalty: the assistant whose side it is stands on the goal line by the post, watching the keeper's line
+  const penL = (pen && pen.lineSpot) ? linesmen.reduce((a,b)=>Math.abs(b.mesh.position.x-pen.lineSpot.x)<Math.abs(a.mesh.position.x-pen.lineSpot.x)?b:a) : null;
+  if(penL){ penL.mesh.position.set(pen.lineSpot.x,FOOT_LIFT,pen.lineSpot.z); penL.z=pen.lineSpot.z;
+    const fz=Math.atan2(-pen.lineSpot.x*0, -(pen.dir)); penL.heading=Math.atan2(0,-pen.dir); penL.mesh.rotation.set(0,penL.heading,0);
+    switchClip(penL,'idle',false,1); penL.mixer.update(dt); applyFist(penL.curl);
+    penL.gripT+=(0-penL.gripT)*Math.min(1,dt*5); penL.flag.quaternion.slerpQuaternions(penL.gripIdle.q, penL.gripMove.q, penL.gripT); penL.flag.position.lerpVectors(penL.gripIdle.pos, penL.gripMove.pos, penL.gripT); }
+  linesmen.forEach(l=>{ if(l===penL) return;
     let tz = l.side>0 ? THREE.MathUtils.clamp(ball.position.z, -2, HALF_L-3)
                         : THREE.MathUtils.clamp(ball.position.z, -(HALF_L-3), 2);
     const tk = players.find(q=>q.tin) || ((throwTimer>0 && setPieceTaker && setPieceLabel==='SAQUE DE BANDA') ? setPieceTaker : null);
@@ -1648,7 +1655,9 @@ function setupPenalty(team){
   const others=players.filter(q=>q!==kicker&&q!==keeper&&!q.sentOff);
   others.forEach((q,i)=>{ const sd=(i%2)?1:-1, k=Math.floor(i/2); const x=sd*(11+k*3.3); const z=G-dir*(BOX_DEPTH+2+(k%2)*2.2);   // outside the area, off to the sides (clear view of goal)
     q.pos.set(x,0,z); q.heading=dir>0?0:Math.PI; pen.spots.set(q,{x,z,h:q.heading}); });
-  pen.refSpot=new THREE.Vector3(7.5*(SIDE_FLIP?-1:1)*dir,0,G-dir*(BOX_DEPTH+2.2)); refPos.copy(pen.refSpot);   // outside the area, on the left of the picture (clear of the buttons)
+  const scrL=(SIDE_FLIP?-1:1)*dir;                                         // +1 = the left of the picture behind the kicker
+  pen.refSpot=new THREE.Vector3(scrL*21,0,G-dir*12.5); refPos.copy(pen.refSpot);                     // beside the 6-yard box, a few metres off it (left of the picture)
+  pen.lineSpot=new THREE.Vector3(-scrL*(GOAL_W/2+6),0,G-dir*0.4);                                    // the assistant on the goal line, a few metres past the post (right)
   pen.gkX=0; pen.gkY=1.6; pen.gkMoved=false;
   owner=null; ball.position.copy(S); ballVel.set(0,0,0);
   throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null; passReceiver=null;
@@ -2805,7 +2814,8 @@ function stepPlayer(p,dt){
       p.heading+=dh*Math.min(1,dt*9); } } }
   p.pos.addScaledVector(p.vel,dt);
   { const lim = (throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA') ? HALF_W+TIN_BACK+1 : HALF_W+1;
-    p.pos.x=THREE.MathUtils.clamp(p.pos.x,-lim,lim); }
+    p.pos.x=THREE.MathUtils.clamp(p.pos.x,-lim,lim);
+    if(p.gk && (p.dive||0)>0 && Math.abs(p.pos.z-(p.team===0?-HALF_L:HALF_L))<6) p.pos.x=THREE.MathUtils.clamp(p.pos.x,-(GOAL_W/2+0.8),GOAL_W/2+0.8); }   // a dive ends at the post, not beyond it
   p.pos.z=THREE.MathUtils.clamp(p.pos.z,-HALF_L-3,HALF_L+3);
   // at kickoff NOBODY but the taker may cross midfield until the ball is played; the defending
   // team also stays outside the centre circle
