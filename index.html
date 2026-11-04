@@ -1614,6 +1614,7 @@ const penReticle=(function(){ const g=new THREE.Group();
   const ring=new THREE.Mesh(new THREE.RingGeometry(0.55,0.78,36), new THREE.MeshBasicMaterial({color:0xffe14a,transparent:true,opacity:0.95,side:THREE.DoubleSide,depthTest:false}));
   const dot=new THREE.Mesh(new THREE.CircleGeometry(0.13,18), new THREE.MeshBasicMaterial({color:0xffe14a,side:THREE.DoubleSide,depthTest:false}));
   ring.renderOrder=dot.renderOrder=999; g.add(ring,dot); g.visible=false; scene.add(g); return g; })();
+function penReticleColor(c){ penReticle.children.forEach(m=>{ if(m.material && m.material.color.getHex()!==c) m.material.color.setHex(c); }); }
 function penBanner(show,txt){ const o=document.getElementById('penov'); if(!o) return; o.style.display=show?'block':'none'; if(txt!=null) document.getElementById('penHint').textContent=txt; }
 function flashText(txt){ const f=document.getElementById('flash'); if(!f) return; f.textContent=txt; f.style.display='block'; clearTimeout(flashText._t); flashText._t=setTimeout(()=>{f.style.display='none';},1400); }
 // launch the ball so it crosses the goal line at (tx,ty) — iterated against the real ball physics (drag + gravity)
@@ -1647,12 +1648,13 @@ function setupPenalty(team){
   const others=players.filter(q=>q!==kicker&&q!==keeper&&!q.sentOff);
   others.forEach((q,i)=>{ const sd=(i%2)?1:-1, k=Math.floor(i/2); const x=sd*(11+k*3.3); const z=G-dir*(BOX_DEPTH+2+(k%2)*2.2);   // outside the area, off to the sides (clear view of goal)
     q.pos.set(x,0,z); q.heading=dir>0?0:Math.PI; pen.spots.set(q,{x,z,h:q.heading}); });
-  refPos.set(GOAL_W/2+7,0,G-dir*(BOX_DEPTH-3));
+  pen.refSpot=new THREE.Vector3(7.5*(SIDE_FLIP?-1:1)*dir,0,G-dir*(BOX_DEPTH+2.2)); refPos.copy(pen.refSpot);   // outside the area, on the left of the picture (clear of the buttons)
+  pen.gkX=0; pen.gkY=1.6; pen.gkMoved=false;
   owner=null; ball.position.copy(S); ballVel.set(0,0,0);
   throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null; passReceiver=null;
   if(team===0){ ctrl=players.indexOf(kicker); teamHasBall=true;
     penBanner(true,'Apunta con el joystick · suelta DISPARO para patear (más potencia = menos precisión)'); }
-  else { teamHasBall=false; penBanner(true,'Penal para ROJO — ¡a ver si tu arquero lo tapa!');
+  else { teamHasBall=false; penBanner(true,'Penal para ROJO — mueve el joystick: el marcador azul es a dónde se lanza tu arquero');
     pen.aimX=(Math.random()<0.5?-1:1)*(1.5+Math.random()*(GOAL_W/2-2.5)); pen.aimY=0.5+Math.random()*(GOAL_H-1.5); }
 }
 let PK_SIDE=1, PK_OFF=0.45, PK_BACK=0.9;
@@ -1684,6 +1686,7 @@ function penStrike(){
   const r=Math.random(), s=Math.sign(tx)||1;
   const side = r<0.42 ? s : r<0.82 ? -s : 0;
   pen.guess = { x: side ? side*(2.5+Math.random()*(GOAL_W/2-3)) : (Math.random()-0.5)*1.6, y: 0.5+Math.random()*2.8 };
+  if(pen.team===1 && pen.gkMoved) pen.guess = { x: pen.gkX, y: pen.gkY };   // the rival's penalty: your keeper goes where you chose
   pen.guessT=1.4; pen.phase='live'; pen.camT=2.4;
   if(pen.plc){ k.pkClip=pen.plc.clip; k.pkTs=1.15; k.pkT=(GK[pen.plc.clip.slice(3)].m.d-PLC.A.hit)/1.15; k.faceLock=k.pkT; const a=k.act[k.pkClip]; if(a){ a.timeScale=1.15; } }
 }
@@ -1718,17 +1721,23 @@ function stepPenalty(dt){
       pen.aimX=THREE.MathUtils.clamp(pen.aimX - pen.dir*(SIDE_FLIP?-1:1)*moveDir.x*sp*dt, -GOAL_W/2+0.4, GOAL_W/2-0.4);
       pen.aimY=THREE.MathUtils.clamp(pen.aimY - moveDir.y*sp*0.6*dt, 0.35, GOAL_H-0.3);
       if(pen.t>14) penStartKick(0.7);                                      // don't stall forever
-    } else if(pen.t>1.9) penStartKick(0.5+Math.random()*0.45);
+    } else if(pen.t>3.2) penStartKick(0.5+Math.random()*0.45);      // a bit longer, so you can pick your keeper's side
+  }
+  if(pen.team===1 && pen.phase!=='live' && pen.phase!=='setup'){       // your keeper: pick the dive with the joystick (until the strike)
+    const sp=11; if(moveDir.lengthSq()>0.02) pen.gkMoved=true;
+    pen.gkX=THREE.MathUtils.clamp(pen.gkX - pen.dir*(SIDE_FLIP?-1:1)*moveDir.x*sp*dt, -GOAL_W/2+0.6, GOAL_W/2-0.6);
+    pen.gkY=THREE.MathUtils.clamp(pen.gkY - moveDir.y*sp*0.6*dt, 0.4, GOAL_H-0.4);
   }
   if(pen.phase==='run'){ pen.t2+=dt; if(!pen.kicked && pen.t2>=pen.hitT){ penStrike(); } }
   if(pen && pen.phase!=='live') players.forEach(q=>{ if(!q.sentOff) penHold(q,dt); });
   else players.forEach(q=>stepPlayer(q,dt));                              // the strike frame hands over to live play
-  if(pen && pen.phase==='aim' && pen.team===0){ penReticle.visible=true; penReticle.position.set(pen.aimX,pen.aimY,pen.G-pen.dir*0.15); penReticle.quaternion.copy(camera.quaternion); }
+  if(pen && pen.phase==='aim' && pen.team===0){ penReticle.visible=true; penReticle.position.set(pen.aimX,pen.aimY,pen.G-pen.dir*0.15); penReticle.quaternion.copy(camera.quaternion); penReticleColor(0xffe14a); }
+  else if(pen && pen.team===1 && pen.phase!=='live' && pen.phase!=='setup'){ penReticle.visible=true; penReticle.position.set(pen.gkX,pen.gkY,pen.G-pen.dir*0.15); penReticle.quaternion.copy(camera.quaternion); penReticleColor(0x49a8ff); }   // blue = where YOUR keeper will dive
   else penReticle.visible=false;
   stepReferee(dt); stepLinesmen(dt); updatePowerBars(dt);
 }
 function penaltyCamera(dt){
-  const S=pen.S, want=new THREE.Vector3(S.x, 7.4, S.z - pen.dir*24);        // well behind the kicker: the whole goal in view
+  const S=pen.S, want=new THREE.Vector3(S.x, 8.6, S.z - pen.dir*31);        // well behind the kicker: the goal, the keeper and the referee in view
   camera.position.lerp(want, Math.min(1, dt*3.5)); camera.lookAt(0, 2.4, pen.G);
 }
 // ---- aerial play: a high ball reaching a player -> jumping HEADER (shot / pass / clearance) or a CHILENA ----
@@ -3226,7 +3235,9 @@ const refVel=new THREE.Vector3();
 function stepReferee(dt){
   const booking = cardTimer>0;
   let want;
-  if(booking){
+  if(pen && pen.refSpot && pen.phase!=='live' && !booking){
+    want = pen.refSpot.clone();                                            // penalty: he waits outside the area, watching
+  }else if(booking){
     const bp = (bookee && !bookee.sentOff) ? bookee.pos : foulSpot;           // straight to the player who made the foul
     const side = refPos.clone().sub(bp).setY(0); if(side.lengthSq()<0.01) side.set(1,0,-1); side.setLength(2.6);
     want = bp.clone().setY(0).add(side);
