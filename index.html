@@ -2759,7 +2759,7 @@ function stepPlayer(p,dt){
       p.heading+=dh*Math.min(1,dt*turnRate);
     }
     const accel=isCtrl?12:9;                                     // control accelerates a bit snappier
-    const MOVE_K = ((p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : 0.72) * (koCalm>0 && !isCtrl && owner!==p && passReceiver!==p ? 0.6 : 1);   // calmer pace overall; just after the kick-off everyone eases into the game
+    const MOVE_K = ((p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : (0.72 + 0.12*THREE.MathUtils.clamp((spd-8)/5,0,1))) * (koCalm>0 && !isCtrl && owner!==p && passReceiver!==p ? 0.6 : 1);   // calmer pace overall; just after the kick-off everyone eases into the game
     p.vel.lerp(desired.multiplyScalar(spd*MOVE_K), Math.min(1,dt*accel));
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
