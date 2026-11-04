@@ -776,7 +776,7 @@ function resetPositions(kickTeam){
       const cz=p.team===0?-1.0:1.0; p.pos.set(0,0,cz); p.base.set(0,0,cz);
     }
     if(!p.gk && p.team===kickTeam && p.roleIdx===KO_PARTNER[p.team]){            // the partner stands beside the ball for the first pass
-      const sz=p.team===0?-1.3:1.3, sx=(p.team===0?-1:1)*5.2; p.pos.set(sx,0,sz); p.base.set(sx,0,sz);
+      const sz=p.team===0?-2.0:2.0, sx=(p.team===0?-1:1)*8.5; p.pos.set(sx,0,sz); p.base.set(sx,0,sz);
     }
     if(!p.gk && p.team===kickTeam && p.roleIdx!==STRIKER && p.roleIdx!==KO_PARTNER[p.team] && Math.abs(p.pos.x)<6 && Math.abs(p.pos.z)<14){
       p.pos.x = (p.pos.x>=0?1:-1)*9; p.base.x=p.pos.x;                                 // keep the middle clear: no one right behind the taker
@@ -1066,7 +1066,7 @@ let lastTouch=0, throwTeam=0, throwTimer=0, setPieceLabel='', setPieceTaker=null
 let setPieceForm=0;               // a few seconds for both teams to get into position before the restart can be taken
 let deadTimer=0, deadAction=null;   // ball keeps rolling after a whistle, then the restart is set up
 let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pass; foes held in their half until then
-let koGrace=0;                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
+let koGrace=0, koCalm=0;   // koCalm: a few seconds after the kick-off the game starts gently, nobody charging about                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
 let passReceiver=null, passSeekT=0;   // the mate a pass is heading to moves to meet it, so passes connect
 let possTeam=-1, possConfirmTeam=-1, possConfirmT=0;   // which team is "in possession" for shape (with hysteresis)
 function scheduleRestart(delay, label, fn){
@@ -1333,7 +1333,7 @@ function doAction(which, power){
     owner=kickoffTaker;                      // make sure we have the ball even if it drifted
     const tgt=kickoffPassTarget(kickoffTaker);   // the kickoff is always a short ball BACK/square to a mate
     if(tgt){ passBall(kickoffTaker,tgt,0.65); ctrl=players.indexOf(tgt); }
-    awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8;   // grace: foes hold their shape, don't rush in
+    awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8; koCalm=4.5;   // grace: foes hold their shape, don't rush in
     return;
   }
   // any set-piece (throw-in / free kick / offside) you take: you MUST pass to a teammate to restart —
@@ -2390,7 +2390,7 @@ function stepPlayer(p,dt){
     if(p.koWait>0.7){
       const tgt=kickoffPassTarget(p);                   // nearest mate behind/beside — never a ball forward
       if(tgt){ passBall(p,tgt,0.7); if(p.team===0) ctrl=players.indexOf(tgt); }  // you take over the receiver
-      awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8;   // grace: foes hold their shape, don't rush in
+      awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8; koCalm=4.5;   // grace: foes hold their shape, don't rush in
     }
     desired.set(0,0,0); p.vel.set(0,0,0);
   }else if(awaitKickoffPass && !isCtrl){
@@ -2759,7 +2759,7 @@ function stepPlayer(p,dt){
       p.heading+=dh*Math.min(1,dt*turnRate);
     }
     const accel=isCtrl?12:9;                                     // control accelerates a bit snappier
-    const MOVE_K = (p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : 0.78;  // everyone moves ~22% calmer (keepers' saves stay sharp)
+    const MOVE_K = ((p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : 0.64) * (koCalm>0 && !isCtrl && owner!==p && passReceiver!==p ? 0.6 : 1);   // calmer pace overall; just after the kick-off everyone eases into the game
     p.vel.lerp(desired.multiplyScalar(spd*MOVE_K), Math.min(1,dt*accel));
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
@@ -3427,9 +3427,10 @@ function simFrame(rdt, lastSub){
       if(awaitKickoffPass){
         const passed = owner!==kickoffTaker;                                   // the taker played the ball
         const crossed = kickoffTeam===0 ? ball.position.z>8 : ball.position.z<-8;  // or carried it well upfield
-        if(passed || crossed){ awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8; }
+        if(passed || crossed){ awaitKickoffPass=false; kickoffTaker=null; koGrace=1.8; koCalm=4.5; }
       }
       if(koGrace>0) koGrace-=dt;
+      if(koCalm>0) koCalm-=dt;
       if(passSeekT>0){ passSeekT-=dt; if(passSeekT<=0||owner===passReceiver||(owner&&owner!==passReceiver)) passReceiver=null; }
       stepBall(dt);
       ballDeflect();
