@@ -3141,7 +3141,7 @@ function stepPlayer(p,dt){
   else if((p.kickTrig||0)>0) state='kick';
   else if(owner===p && throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA' && p.act['pk:Throw_In']) state='tinwait';   // ball held in both hands, ready to throw
   else if((p.stopT||0)>0 && p.stopClip && p.act[p.stopClip]) state='stop';       // pulling up from a sprint
-  else if(owner===p && !p.gk && p.speed>3.6 && p.act['pk:Dribble'] && ball.position.y<0.9) state='dribble';   // running WITH the ball
+  else if(owner===p && !p.gk && p.speed>3.6 && p.act['pk:Running_1'] && ball.position.y<0.9) state='dribble';   // running WITH the ball
   else if(p.gk && p.speed>0.7 && p.speed<11 && p.act['gk:Goalkeeper_Sidestep'] && Math.abs(p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading))>p.speed*0.6) state='side';   // shuffling across his goal, facing the play
   else if((p.turnT||0)>0 && p.act.turnL) state = p.turnSide>0 ? 'turnL' : 'turnR';
   else if(p.readyClip && !p.gk && owner!==p && p.speed<1.4 && (throwTimer>0 || kickoffHold>0 || awaitKickoffPass || (owner && owner.gk && owner.team!==p.team))) state='ready';
