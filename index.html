@@ -3613,8 +3613,7 @@ function stepBall(dt){
   { const sp=ballVel.length(), n=Math.min(10,Math.max(1,Math.ceil(sp*dt/0.25))), h=dt/n, st=phyState(); let hit=false;
     for(let i=0;i<n;i++){ phyStep(st,h); if(goalFrameHit(st)) hit=true; }
     ball.position.set(st.x,st.y,st.z); ballVel.set(st.vx,st.vy,st.vz); ballSpin.set(st.wx,st.wy,st.wz);
-    if(postCd>0) postCd-=dt;
-    if(hit && postCd<=0 && ballVel.length()>12){ postCd=1.2; flashText('¡AL PALO!'); lastTouch = (ball.position.z>0?1:0); } }
+    if(postCd>0) postCd-=dt; }
   lastBV.copy(ballVel);
   // sideline out of play -> throw-in (let it roll out, then restart)
   if(Math.abs(ball.position.x)>HALF_W && Math.abs(ball.position.z)<HALF_L
