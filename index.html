@@ -1059,10 +1059,14 @@ function soNext(){
 function soResolve(scored){
   if(!so || !pen || !pen.shootout || pen.soDone) return;
   pen.soDone=true; const t=pen.team; so.kicks[t]++; if(scored) so.goals[t]++;
+  let react=false;
+  if(so.kicks[t]===1){ react=true; const k=pen.kicker, kp=pen.keeper;
+    if(k){ k.celebT=2.6; k.celebAnim = scored ? 'cheer' : 'anger'; }
+    if(kp){ kp.celebT=2.6; kp.celebAnim = scored ? 'anger' : 'cheer'; } }
   flashText(scored?'¡GOL!':'¡FALLÓ!');
   document.getElementById('tim').textContent='PEN '+so.goals[0]+'-'+so.goals[1];
   so.turn=1-t; so.busy=true;
-  setTimeout(()=>{ pen=null; penReticle.visible=false; soNext(); }, 1700);
+  setTimeout(()=>{ pen=null; penReticle.visible=false; soNext(); }, react?2900:1700);
 }
 let menuActive=true, menuT=0;   // main-menu state: a slow cinematic camera pans the pitch behind the menu
 let ctrl=1;                       // index into blue team (players[ctrl]) controlled
@@ -1622,7 +1626,7 @@ const penReticle=(function(){ const g=new THREE.Group();
   const dot=new THREE.Mesh(new THREE.CircleGeometry(0.13,18), new THREE.MeshBasicMaterial({color:0xffe14a,side:THREE.DoubleSide,depthTest:false}));
   ring.renderOrder=dot.renderOrder=999; g.add(ring,dot); g.visible=false; scene.add(g); return g; })();
 function penReticleColor(c){ penReticle.children.forEach(m=>{ if(m.material && m.material.color.getHex()!==c) m.material.color.setHex(c); }); }
-function penBanner(show,txt){ const o=document.getElementById('penov'); if(!o) return; o.style.display=show?'block':'none'; if(txt!=null) document.getElementById('penHint').textContent=txt; }
+function penBanner(show,txt){ const o=document.getElementById('penov'); if(!o) return; o.style.display=show?'block':'none'; if(txt!=null){ const h=document.getElementById('penHint'); h.textContent=txt; h.style.display=txt?'inline-block':'none'; } }
 function flashText(txt){ const f=document.getElementById('flash'); if(!f) return; f.textContent=txt; f.style.display='block'; clearTimeout(flashText._t); flashText._t=setTimeout(()=>{f.style.display='none';},1400); }
 // launch the ball so it crosses the goal line at (tx,ty) — iterated against the real ball physics (drag + gravity)
 function aimBallAt(tx,ty,tz,speed){
@@ -1639,6 +1643,7 @@ function setupPenalty(team){
   const keeper=players.find(q=>q.team!==team&&q.gk&&!q.sentOff);
   if(!kicker||!keeper){ awardSetPiece(team,0,S.z-dir*2,'TIRO LIBRE'); return; }
   players.forEach(q=>{ q.slide=0; q.dive=0; q.gkClip=null; q.gkKickT=0; q.fall=0; q.getupT=0; q.reactT=0; q.chT=0; q.pkT=0; q.vel.set(0,0,0); q.kickCd=0; q.gkDir=0; });
+  players.forEach(q=>{ q.celebT=0; });
   pen={team,dir,G,S,kicker,keeper,phase:'setup',t:0,aimX:0,aimY:1.8,camT:1,spots:new Map(),power:0.7,kicked:false};
   kicker.pos.set(S.x-0.9, 0, S.z-dir*6.4); kicker.heading=dir>0?0:Math.PI;
   pen.plc=null;
@@ -1653,7 +1658,8 @@ function setupPenalty(team){
     } }
   keeper.pos.set(0,0,G-dir*1.2); keeper.heading=dir>0?Math.PI:0;
   const others=players.filter(q=>q!==kicker&&q!==keeper&&!q.sentOff);
-  others.forEach((q,i)=>{ const sd=(i%2)?1:-1, k=Math.floor(i/2); const x=sd*(11+k*3.3); const z=G-dir*(BOX_DEPTH+2+(k%2)*2.2);   // outside the area, off to the sides (clear view of goal)
+  const tc=[0,0];
+  others.forEach((q,i)=>{ const k=tc[q.team]++, sd=(q.team===0?1:-1)*(SIDE_FLIP?-1:1)*dir; const x=sd*(12+k*3.4); const z=G-dir*(BOX_DEPTH+3+(k%2)*2.6);   // blues on one side, reds on the other, outside the area
     q.pos.set(x,0,z); q.heading=dir>0?0:Math.PI; pen.spots.set(q,{x,z,h:q.heading}); });
   const scrL=(SIDE_FLIP?-1:1)*dir;                                         // +1 = the left of the picture behind the kicker
   pen.refSpot=new THREE.Vector3(scrL*21,0,G-dir*12.5); refPos.copy(pen.refSpot);                     // beside the 6-yard box, a few metres off it (left of the picture)
@@ -1662,8 +1668,8 @@ function setupPenalty(team){
   owner=null; ball.position.copy(S); ballVel.set(0,0,0);
   throwTimer=0; setPieceForm=0; setPieceTaker=null; deadTimer=0; deadAction=null; passReceiver=null;
   if(team===0){ ctrl=players.indexOf(kicker); teamHasBall=true;
-    penBanner(true,'Apunta con el joystick · suelta DISPARO para patear (más potencia = menos precisión)'); }
-  else { teamHasBall=false; penBanner(true,'Penal para ROJO — mueve el joystick: el marcador azul es a dónde se lanza tu arquero');
+    penBanner(!so || (so.kicks[0]+so.kicks[1])<2,''); }
+  else { teamHasBall=false; penBanner(!so || (so.kicks[0]+so.kicks[1])<2,'');
     pen.aimX=(Math.random()<0.5?-1:1)*(1.5+Math.random()*(GOAL_W/2-2.5)); pen.aimY=0.5+Math.random()*(GOAL_H-1.5); }
 }
 let PK_SIDE=1, PK_OFF=0.45, PK_BACK=0.9;
@@ -2337,6 +2343,9 @@ function predictAtGoalLine(team){
 
 /* ============ update ============ */
 function stepPlayer(p,dt){
+  if((p.celebT||0)>0){ p.celebT-=dt; p.vel.set(0,0,0); p.speed=0;     // celebrating / gutted after a penalty
+    const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
+    driveAnim(p,p.celebAnim||'cheer',0,dt); m.userData.ring.visible=false; return; }
   if((p.plc||p.plcPending) && !(throwTimer>0 && p===setPieceTaker && owner===p)){ p.plc=null; p.plcPending=null; }   // the restart is gone: stop placing
   if(p.plcPending && !((p.fall||0)>0) && !((p.getupT||0)>0)){ const sp=p.plcPending; p.plcPending=null; startPlaceFK(p,sp); }   // back on his feet: now he places it
   if(p.plc && stepPlaceFK(p,dt)) return;      // putting the ball down for a free kick
@@ -3348,6 +3357,7 @@ const lA=document.getElementById('lA'),lB=document.getElementById('lB'),lC=docum
 const bA=document.getElementById('bA'),bB=document.getElementById('bB'),bC=document.getElementById('bC');
 let lastMode=null, lastThrow=false, lastDead=false, lastForm=false;
 function updateButtons(){
+  poss.style.visibility = pen ? 'hidden' : 'visible';            // no "atacando / defendiendo" during a penalty
   const thr = throwTimer>0, dead = deadTimer>0, forming = setPieceForm>0;
   const mode = teamHasBall?'atk':'def';
   if(mode===lastMode && thr===lastThrow && dead===lastDead && forming===lastForm) return;
@@ -3374,6 +3384,8 @@ function loop(now){
   autoGfx(rdt0);
   const nSub = rdt0>0.045 ? 2 : 1;          // a long frame (slow phone) is simulated in 2 steps: real-time pace, stable physics
   for(let sub=0; sub<nSub; sub++) simFrame(rdt0/nSub, sub===nSub-1);
+  if(ended && postT>0){ postT-=rdt0; penReticle.visible=false; penBanner(false);
+    players.forEach(q=>{ if(q.sentOff||!q.endAnim) return; const m=q.mesh; m.position.set(q.pos.x,FOOT_LIFT,q.pos.z); driveAnim(q,q.endAnim,0,rdt0); }); }   // celebrations after the final whistle
   if(menuActive){
     // slow cinematic orbit over the pitch while the main menu is up
     menuT+=rdt0; const a=menuT*0.18;
@@ -3508,8 +3520,11 @@ function autoGfx(fdt){
 }
 
 let ended=false;
+let postT=0;
 function endMatch(soW){
   if(ended)return; ended=true; running=false;
+  const w = (soW===0||soW===1) ? soW : score[0]>score[1] ? 0 : score[1]>score[0] ? 1 : -1;
+  if(w>=0){ postT=7; players.forEach((q,i)=>{ q.endAnim = q.team===w ? (i%2?'cheer':'dance') : (i%3?'protest':'anger'); }); }
   const g=document.getElementById('goal'); g.style.display='grid';
   const msg = (soW===0) ? '¡GANASTE EN PENALES!' : (soW===1) ? 'PERDISTE EN PENALES' : score[0]>score[1]?'¡GANASTE!':score[0]<score[1]?'PERDISTE':'EMPATE';
   if(so) document.getElementById('tim').textContent='PEN '+so.goals[0]+'-'+so.goals[1];
