@@ -750,6 +750,7 @@ const ROLE={
 const LINEUP=[ ['GK','LB','LCB','RCB','RB','LCM','CDM','RCM','LW','RW','ST'],     // AZUL 4-3-3
                ['GK','LB','LCB','RCB','RB','LDM','RDM','CAM','LW','RW','ST'] ];   // ROJO 4-2-1-3
 const FORMATION_NAME=['4-3-3','4-2-1-3'];
+const KO_PARTNER=[5,7];                 // who takes the kick-off with the striker: blue's left interior, red's number 10
 function roleOf(p){ return ROLE[LINEUP[p.team][p.roleIdx]]||ROLE.CDM; }
 const FORM=[0,1].map(t=>LINEUP[t].map(c=>{ const r=ROLE[c], sg=t===0?1:-1; return c==='GK'?[0,sg*(-_L+2)]:[sg*r.x*_W, sg*r.base*_L]; }));
 function isDef(p){ return roleOf(p).line==='D'; }
@@ -773,6 +774,12 @@ function resetPositions(kickTeam){
     // the kicking team's striker stands just behind the ball on the centre spot to take the kickoff
     if(!p.gk && p.roleIdx===STRIKER && p.team===kickTeam){
       const cz=p.team===0?-1.0:1.0; p.pos.set(0,0,cz); p.base.set(0,0,cz);
+    }
+    if(!p.gk && p.team===kickTeam && p.roleIdx===KO_PARTNER[p.team]){            // the partner stands beside the ball for the first pass
+      const sz=p.team===0?-1.3:1.3, sx=(p.team===0?-1:1)*5.2; p.pos.set(sx,0,sz); p.base.set(sx,0,sz);
+    }
+    if(!p.gk && p.team===kickTeam && p.roleIdx!==STRIKER && p.roleIdx!==KO_PARTNER[p.team] && Math.abs(p.pos.x)<6 && Math.abs(p.pos.z)<14){
+      p.pos.x = (p.pos.x>=0?1:-1)*9; p.base.x=p.pos.x;                                 // keep the middle clear: no one right behind the taker
     }
     p.mesh.position.copy(p.pos);
     p.heading = p.team===0?0:Math.PI;
@@ -1106,6 +1113,7 @@ function kickoffBegin(){
 // never a long ball forward)
 function kickoffPassTarget(p){
   const dir=p.team===0?1:-1;                        // the team's attacking direction in z
+  if(awaitKickoffPass && p===kickoffTaker){ const pt=players.find(q=>q.team===p.team&&q.roleIdx===KO_PARTNER[p.team]&&!q.sentOff); if(pt && pt.pos.distanceTo(p.pos)<12) return pt; }   // the first touch goes to the man beside him
   let best=null,bd=1e9;
   players.forEach(q=>{ if(q.team!==p.team||q===p||q.sentOff||q.gk) return;
     const back=-(q.pos.z-p.pos.z)*dir;              // + = behind the taker; skip anyone clearly ahead
@@ -2739,7 +2747,7 @@ function stepPlayer(p,dt){
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
     if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
-  if(!isCtrl && !p.gk && !(p.slide>0)){ if(!p.dSm) p.dSm=desired.clone(); else p.dSm.lerp(desired, Math.min(1,dt*7)); desired.copy(p.dSm); }
+  if(!isCtrl && !p.gk && !(p.slide>0)){ if(!p.dSm) p.dSm=desired.clone(); else if(desired.lengthSq()<1e-6 || owner===p) p.dSm.copy(desired); else p.dSm.lerp(desired, Math.min(1,dt*7)); desired.copy(p.dSm); }   // smoothed steering, but a STOP is a stop
   if(desired.lengthSq()>0.001){
     desired.normalize();
     // while a pass/kick facing is locked, DON'T rotate toward movement (keeps the strike pointing where the ball goes)
@@ -2751,7 +2759,7 @@ function stepPlayer(p,dt){
       p.heading+=dh*Math.min(1,dt*turnRate);
     }
     const accel=isCtrl?12:9;                                     // control accelerates a bit snappier
-    const MOVE_K = (p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : 0.9;   // everyone moves ~10% calmer (keepers' saves stay sharp)
+    const MOVE_K = (p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : 0.78;  // everyone moves ~22% calmer (keepers' saves stay sharp)
     p.vel.lerp(desired.multiplyScalar(spd*MOVE_K), Math.min(1,dt*accel));
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
