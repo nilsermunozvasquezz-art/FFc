@@ -728,19 +728,39 @@ function assignRoles(){
 
 /* formations — one player per position, spread out (blue attacks +Z; red attacks -Z):
    0 GK · 1 left-def · 2 right-def · 3 left-wing · 4 right-wing · 5 striker */
-// 0 GK · 1 LB · 2 CB · 3 CB · 4 RB · 5 LM · 6 CM · 7 CM · 8 RM · 9 second striker · 10 striker
 const _W=HALF_W, _L=HALF_L;
-const FORM_B=[[0,-_L+2],[-0.62*_W,-0.5*_L],[-0.2*_W,-0.6*_L],[0.2*_W,-0.6*_L],[0.62*_W,-0.5*_L],
-              [-0.6*_W,-0.14*_L],[-0.2*_W,-0.22*_L],[0.2*_W,-0.22*_L],[0.6*_W,-0.14*_L],[-0.15*_W,0.16*_L],[0.12*_W,0.24*_L]];
-const FORM=[ FORM_B, FORM_B.map(f=>[-f[0],-f[1]]) ];          // red mirrored
-function isDef(p){ return p.roleIdx>=1 && p.roleIdx<=4; }
-function isMid(p){ return p.roleIdx>=5 && p.roleIdx<=8; }
-function isFwd(p){ return p.roleIdx>=9; }
+// role sheet (blue's frame: x = across, z = up the pitch as a fraction of the half-length)
+//  base: shape position · atk: how high he goes when WE have it · off: where he sits relative to the defensive line
+//  press: how eagerly he goes to press (lower = sooner) · slide: tackling appetite · shoot: max shooting distance · cross: wide man who crosses
+const ROLE={
+  GK :{line:'G',x:0,    base:-0.98,atk:-0.98,off:0, press:9,  slide:0,   shoot:0,  wide:false},
+  LB :{line:'D',x:-0.62,base:-0.5, atk:-0.04,off:0, press:1.0,slide:1.2, shoot:22, wide:true },
+  RB :{line:'D',x: 0.62,base:-0.5, atk:-0.04,off:0, press:1.0,slide:1.2, shoot:22, wide:true },
+  LCB:{line:'D',x:-0.2, base:-0.6, atk:-0.33,off:0, press:1.15,slide:1.4,shoot:20, wide:false},
+  RCB:{line:'D',x: 0.2, base:-0.6, atk:-0.33,off:0, press:1.15,slide:1.4,shoot:20, wide:false},
+  CDM:{line:'M',x:0,    base:-0.32,atk:-0.1, off:4, press:0.9,slide:1.35,shoot:28, wide:false},   // screens the back four
+  LDM:{line:'M',x:-0.17,base:-0.3, atk:-0.07,off:5, press:0.9,slide:1.3, shoot:28, wide:false},
+  RDM:{line:'M',x: 0.17,base:-0.3, atk:-0.07,off:5, press:0.9,slide:1.3, shoot:28, wide:false},
+  LCM:{line:'M',x:-0.3, base:-0.2, atk:0.12, off:9, press:0.9,slide:1.0, shoot:32, wide:false},   // box-to-box
+  RCM:{line:'M',x: 0.3, base:-0.2, atk:0.12, off:9, press:0.9,slide:1.0, shoot:32, wide:false},
+  CAM:{line:'M',x:0,    base:-0.04,atk:0.27, off:14,press:0.85,slide:0.7,shoot:44, wide:false},  // the playmaker between the lines
+  LW :{line:'F',x:-0.62,base:0.08, atk:0.37, off:19,press:0.85,slide:0.5, shoot:38, wide:true, cross:true},
+  RW :{line:'F',x: 0.62,base:0.08, atk:0.37, off:19,press:0.85,slide:0.5, shoot:38, wide:true, cross:true},
+  ST :{line:'F',x:0,    base:0.2,  atk:0.44, off:27,press:0.8,slide:0.4, shoot:46, wide:false}};
+const LINEUP=[ ['GK','LB','LCB','RCB','RB','LCM','CDM','RCM','LW','RW','ST'],     // AZUL 4-3-3
+               ['GK','LB','LCB','RCB','RB','LDM','RDM','CAM','LW','RW','ST'] ];   // ROJO 4-2-1-3
+const FORMATION_NAME=['4-3-3','4-2-1-3'];
+function roleOf(p){ return ROLE[LINEUP[p.team][p.roleIdx]]||ROLE.CDM; }
+const FORM=[0,1].map(t=>LINEUP[t].map(c=>{ const r=ROLE[c], sg=t===0?1:-1; return c==='GK'?[0,sg*(-_L+2)]:[sg*r.x*_W, sg*r.base*_L]; }));
+function isDef(p){ return roleOf(p).line==='D'; }
+function isMid(p){ return roleOf(p).line==='M'; }
+function isFwd(p){ return roleOf(p).line==='F'; }
 const STRIKER=PER_TEAM-1;                              // last index = striker (5)
 // kickoff layout: every player inside their OWN half, well spaced (blue z<0, red z>0)
-const KICK_B=[[0,-_L+2],[-0.6*_W,-0.46*_L],[-0.2*_W,-0.55*_L],[0.2*_W,-0.55*_L],[0.6*_W,-0.46*_L],
-              [-0.58*_W,-0.2*_L],[-0.2*_W,-0.24*_L],[0.2*_W,-0.24*_L],[0.58*_W,-0.2*_L],[-0.18*_W,-0.05*_L],[0,-2]];
-const KICK=[ KICK_B, KICK_B.map(f=>[-f[0],-f[1]]) ];
+// kickoff: everyone in his own half in the shape (the striker on the centre spot)
+const KICK=[0,1].map(t=>LINEUP[t].map(c=>{ const r=ROLE[c], sg=t===0?1:-1;
+  if(c==='GK') return [0,sg*(-_L+2)]; if(c==='ST') return [0,sg*-2];
+  return [sg*r.x*_W*0.95, sg*THREE.MathUtils.clamp(r.base*0.92,-0.56,-0.05)*_L]; }));
 function resetPositions(kickTeam){
   assignRoles();
   players.forEach(p=>{
@@ -1199,6 +1219,7 @@ document.getElementById('mBack').onclick=()=>{panelOpt.style.display='none'; pan
 document.getElementById('goBtn').onclick=()=>{
   document.getElementById('start').style.display='none';
   menuActive=false; running=true; period=1; timeLeft=HALF_SECS; so=null; setFlip(false); kickoff(1);
+  showBreak('ALINEACIONES','AZUL '+FORMATION_NAME[0]+'   ·   ROJO '+FORMATION_NAME[1],2400);
 };
 // graphics quick-select on the main menu (same setting as the pause-menu options)
 (function(){ const seg=document.getElementById('startGfx'); if(!seg) return;
@@ -1236,7 +1257,13 @@ function computeDefRoles(){
     if(!outs.length){ defRoleCache[team]={presser:null,cover:null,outlet:null}; continue; }
     const gz=team===0?-HALF_L:HALF_L;
     const goalDist=q=>Math.abs(q.pos.z-gz)+Math.abs(q.pos.x)*0.3;
-    let presser=outs[0]; for(const q of outs) if(q.pos.distanceTo(ball.position)<presser.pos.distanceTo(ball.position)) presser=q;
+    const ballOut=(ball.position.z-gz)*(team===0?1:-1);               // how far the ball is from OUR goal
+    const pf=q=>{ const r=roleOf(q); let f=r.press;
+      if(r.line==='D' && !r.wide && ballOut>HALF_L*1.05) f*=2.4;       // centre-backs don't chase into the other half
+      if(r.line==='F' && ballOut<HALF_L*0.55) f*=1.9;                  // forwards don't chase back into our third
+      if(r.line==='F' && ballOut>HALF_L*1.35) f*=0.75;                 // ...but they press high up the pitch
+      return f; };
+    let presser=outs[0]; for(const q of outs) if(q.pos.distanceTo(ball.position)*pf(q)<presser.pos.distanceTo(ball.position)*pf(presser)) presser=q;
     const rest=outs.filter(q=>q!==presser);
     let cover=rest[0]||presser; for(const q of rest) if(goalDist(q)<goalDist(cover)) cover=q;
     const rest2=rest.filter(q=>q!==cover);
@@ -1394,11 +1421,14 @@ function cpuTryKick(p){
   if(p.kickCd>0) return false;
   const goal=new THREE.Vector3(0,0,-HALF_L);          // blue goal (cpu attacks -Z)
   const dg=ball.position.distanceTo(goal);
-  if(ball.position.z > -HALF_L+50) return false;       // start looking for goal once inside ~50 m
+  if(ball.position.z > -HALF_L+64) return false;       // start looking for goal in the final third
   const onAngle=Math.abs(ball.position.x)<GOAL_W+5;
   // take the shot on when there's a sight of goal (so the rival actually creates chances)
   if((p.holdT||0)>0.3 && Math.random()<(redCombo>=2?0.7:0.5) && cpuThroughBall(p)) return true;   // a runner in behind: slide him through on goal
-  if(onAngle && (dg<30 || (dg<38 && Math.random()<0.5) || (redCombo>=2 && dg<44 && Math.random()<0.06))){   // near the box: SHOOT
+  const Rk=roleOf(p);
+  if(Rk.cross && (p.holdT||0)>0.3 && Math.abs(ball.position.x)>BOX_HALF_W-6 && Math.abs(ball.position.z+HALF_L)<34 && Math.random()<0.08 && cpuCross(p)) return true;   // winger to the byline: cross it in
+  const onAngleL=Math.abs(ball.position.x)<GOAL_W+12;
+  if(dg<Rk.shoot+6 && ((onAngle && (dg<30 || (dg<38 && Math.random()<0.5))) || (onAngleL && (p.holdT||0)>0.35 && Math.random()<(redCombo>=2?0.09:0.05)))){   // in range: SHOOT (by role), including a strike from distance
     // aim for the corner AWAY from the keeper so it's a real test, not straight at them
     const gk=players.find(q=>q.team===0&&q.gk);
     const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
@@ -2022,6 +2052,23 @@ function cpuThroughBall(p){
     const sc=ahead*0.45+md+((q.runGamble||0)>0?6:0)-Math.abs(q.pos.x)*0.08-d*0.05; if(md>4 && sc>rb){ rb=sc; run=q; } });
   if(!run) return false; passBall(p,run,0.95); return true;
 }
+// CPU winger cross: a ball floated onto the head of a man in the box (header / chilena follow on their own)
+function cpuCross(p){
+  const gz=p.team===0?HALF_L:-HALF_L; let best=null, bs=-1e9;
+  players.forEach(q=>{ if(q.team!==p.team||q===p||q.gk||q.sentOff) return; const inBox=Math.abs(q.pos.z-gz)<BOX_DEPTH+4 && Math.abs(q.pos.x)<BOX_HALF_W;
+    if(!inBox) return; let md=99; players.forEach(o=>{ if(o.team!==p.team&&!o.sentOff) md=Math.min(md,o.pos.distanceTo(q.pos)); });
+    const sc=md - Math.abs(q.pos.x)*0.1 + (roleOf(q).line==='F'?2:0); if(sc>bs){ bs=sc; best=q; } });
+  if(!best) return false;
+  const mate=best;
+  queueKick(p, mate.pos.clone().sub(p.pos).setY(0), ()=>{
+    ballAtRightFoot(p);
+    const tgt=mate.pos.clone().addScaledVector(mate.vel||new THREE.Vector3(),0.35), to=tgt.sub(ball.position).setY(0), d=to.length();
+    const T=THREE.MathUtils.clamp(d/28,0.65,1.4); to.normalize(); const kk=-Math.log(AIR_FR), corr=kk>1e-4?(1-Math.exp(-kk*T))/(kk*T):1;
+    ballVel.copy(to).multiplyScalar(d/T/corr); ballVel.y=(4.6-ball.position.y)/T+GRAV*T/2;
+    p.kickCd=0.9; owner=null; lastTouch=p.team; passReceiver=mate; passSeekT=T+0.3; showPower(p,0.8);
+  }, 'shot');
+  return true;
+}
 // CPU long ball: a diagonal / over the top to an open man far up the pitch (lofted onto him)
 function cpuLongBall(p){
   const dir=p.team===0?1:-1; let best=null, bs=-1e9;
@@ -2502,22 +2549,16 @@ function stepPlayer(p,dt){
     const weHave = (possTeam===p.team);        // SHAPE possession (hysteresis) — not the 1-frame ball owner
     const base=FORM[p.team][p.roleIdx];
     // shift formation: push forwards into attack when we have the ball, drop back otherwise
-    let bx=base[0]+ball.position.x*.35;
+    const R=roleOf(p);
+    let bx=base[0]+ball.position.x*(R.wide?0.12:0.35);                   // wide men keep the width
     let bz;
-    const deepFwd=isFwd(p)||p.roleIdx===5||p.roleIdx===8;                  // forwards + wide midfielders run high
+    const deepFwd=isFwd(p);                                                // the front three run high
     if(weHave){
       // attacking: the striker + both wings push on and ONE defender steps up to support the counter,
       // while the OTHER defender stays home to cover — so the whole team joins in but one stays back
       const sg=p.team===0?1:-1;
-      if(p.roleIdx===2||p.roleIdx===3){                      // centre-backs hold the back line (yours a touch higher)
-        bz=sg*(p.team===0?-0.3:-0.36)*HALF_L + ball.position.z*0.18;
-      }else if(p.roleIdx===1||p.roleIdx===4){                // full-backs push on down the flanks
-        bz=sg*(-0.06*HALF_L) + ball.position.z*0.3;
-      }else if(isMid(p)){                                     // midfield supports the attack
-        bz=sg*((p.roleIdx===5||p.roleIdx===8)?0.22:0.1)*HALF_L + ball.position.z*0.3;
-      }else{                                                  // the two forwards lead the line into the box
-        bz=sg*(p.roleIdx===STRIKER?0.42:0.34)*HALF_L + ball.position.z*0.12;
-      }
+      const k = R.line==='D' ? (R.wide?0.3:0.18) : R.line==='M' ? 0.3 : 0.12;   // how much he follows the ball up and down
+      bz=sg*(R.atk + (p.team===0 && R.line==='D' && !R.wide ? 0.03 : 0))*HALF_L + ball.position.z*k;   // each role's attacking height
     }else{
       // defending: keep the striker up as an outlet, everyone else drops back to defend
       if(p.roleIdx===STRIKER){
@@ -2597,7 +2638,7 @@ function stepPlayer(p,dt){
       // pressure: nearest opponent distance -> pass sooner when closed down (one-touch feel)
       let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
       // in the attacking third with space, the CPU carries the ball in to make a chance instead of passing straight away
-      const inAttack = p.team===1 && ball.position.z < -HALF_L+52;
+      const inAttack = p.team===1 && ball.position.z < -HALF_L+68;
       const hold=(p.holdT||0), need = inAttack ? (redCombo<3 ? (opD<3.2?0.25:0.4) : (opD<2.4?0.3:1.2)) : (opD<3.6 ? 0.2 : 0.55);   // keep it moving in midfield, tiki-taka near the box, then drive at goal   // quick one-touch combinations in the final third
       // only the CPU (red) auto-passes; your blue players never kick on their own — you decide
       if(!acted && p.team===1 && !inAttack && hold>0.35){ if(p.longRoll===undefined) p.longRoll=Math.random()<0.45; if(p.longRoll && cpuLongBall(p)){ p.longRoll=false; acted=true; } }   // switch play / ball over the top
@@ -2633,8 +2674,9 @@ function stepPlayer(p,dt){
         // drop into the line, keeping your lane (formation side), shading onto a nearby man to mark
         let tx=base[0]*0.75 + ball.position.x*0.35;
         let tz=lineZ;
-        if(isMid(p)) tz = gdir>0 ? Math.max(lineZ+9, ownGoalZ+minDepth+6) : Math.min(lineZ-9, ownGoalZ-minDepth-6);       // midfield line in front of the back four
-        else if(isFwd(p)) tz = lineZ + gdir*22;                                                                             // forward screens the build-up
+        const Rd=roleOf(p);
+        if(isMid(p)) tz = gdir>0 ? Math.max(lineZ+Rd.off, ownGoalZ+minDepth+Rd.off*0.6) : Math.min(lineZ-Rd.off, ownGoalZ-minDepth-Rd.off*0.6);   // midfield screen (DMs deeper, the 10 higher)
+        else if(isFwd(p)){ tz = lineZ + gdir*Rd.off; if(Rd.wide) tx = base[0]*0.9 + ball.position.x*0.15; }                        // wingers track back wide, the 9 waits higher
         else tz = gdir>0 ? Math.max(lineZ-4, ownGoalZ+minDepth-2) : Math.min(lineZ+4, ownGoalZ-minDepth+2);              // the back four
         const m=pickMark(p);
         if(m && Math.abs(m.pos.x-tx)<10 && !isFwd(p)){
@@ -2646,7 +2688,7 @@ function stepPlayer(p,dt){
       }
       // cpu slide-tackles the human carrier when pressing and close
       if(p.team===1 && p.slideCd<=0 && owner && owner.team===0 && rank<=1
-         && p.pos.distanceTo(owner.pos)<4.6 && Math.random()<dt*2.8){
+         && p.pos.distanceTo(owner.pos)<4.6 && Math.random()<dt*2.8*roleOf(p).slide){
         p.slide=0.6; p.slideMax=0.6; p.slideCd=1.8;
       }
     }else if(weHave && !p.gk){
@@ -2760,7 +2802,7 @@ function stepPlayer(p,dt){
   if((p.runGamble||0)>0) p.runGamble-=dt;
   else if(!p.gk){
     // forwards time runs in behind; the CPU's attackers gamble a little more often to make chances
-    const rate = (p.team===1 && (isFwd(p)||p.roleIdx===5||p.roleIdx===8)) ? dt*0.16 : (isFwd(p)?dt*0.06:dt*0.03);
+    const Rg=roleOf(p); const rate = isFwd(p) ? (p.team===1?dt*0.16:dt*0.07) : (Rg===ROLE.CAM||Rg===ROLE.LCM||Rg===ROLE.RCM) ? dt*0.05 : (Rg.wide?dt*0.035:0);   // forwards run in behind; 8s and the 10 arrive late; full-backs overlap
     if(Math.random()<rate) p.runGamble=1.0;
   }
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else { p.holdT=0; p.longRoll=undefined; }  // AI possession timer
