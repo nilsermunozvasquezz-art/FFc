@@ -1,4 +1,4 @@
-<title>FFc Fútbol 6v6</title>
+<title>FFc Fútbol 11v11</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 :root{--bg:#06250f;--fg:#fff;--blue:#1e6fff;--red:#e2353b;--grn:#19c268;color-scheme:dark}
@@ -186,7 +186,7 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 </div>
 
 <div id="start"><div class="card">
-  <h1>FFc · FÚTBOL 6v6</h1>
+  <h1>FFc · FÚTBOL 11v11</h1>
   <div class="sub">MENÚ PRINCIPAL</div>
   <p>Mueve con el joystick (izquierda). Los botones cambian según si tu equipo
      tiene el balón (atacar) o no (defender). Mete más goles en 5 minutos.</p>
@@ -196,7 +196,7 @@ canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%}
 </div></div>
 
 <div id="loadov" style="position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#06250f;color:#fff;font-family:system-ui,sans-serif;gap:14px">
-  <div style="font-size:20px;font-weight:700;letter-spacing:.5px">FFc · FÚTBOL 6v6</div>
+  <div style="font-size:20px;font-weight:700;letter-spacing:.5px">FFc · FÚTBOL 11v11</div>
   <div style="font-size:15px;opacity:.85">Cargando jugadores 3D… <span id="loadpct">0%</span></div>
   <div style="width:180px;height:6px;background:#0e3a1c;border-radius:4px;overflow:hidden"><div id="loadbar" style="width:0%;height:100%;background:#19c268;transition:width .2s"></div></div>
 </div>
@@ -245,12 +245,12 @@ function __startGame(){
 // THREE, GLTFLoader, skeletonClone, GLB_SCENE, GLB_CLIPS, RED_TEX come from the module scope above
 
 /* ============ constants ============ */
-const HALF_W = 47, HALF_L = 89;          // field x / z half-extents (bigger pitch)
+const HALF_W = 72, HALF_L = 118;         // field x / z half-extents (11-a-side pitch)
 const GOAL_W = 18.5, GOAL_H = 5.0, GOAL_D = 2.4;
 const BALL_R = 0.34, P_R = 1.62;
 const PLAYER_SCALE = 1.24;            // players a bit bigger
 const FOOT_LIFT = 0.05;               // lift so the shoes rest ON the grass (no sinking / levitating)
-const BOX_HALF_W = 25.5, BOX_DEPTH = 21;   // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
+const BOX_HALF_W = 34, BOX_DEPTH = 29;     // penalty area (matches the drawn 18-yd box); keepers can only HANDLE here
 function inOwnBox(p){ const gl=p.team===0?-HALF_L:HALF_L; return Math.abs(p.pos.x)<BOX_HALF_W && Math.abs(p.pos.z-gl)<BOX_DEPTH; }
 // ball physics (shared by stepBall AND the keeper's trajectory predictor so saves stay accurate)
 const GRAV = 27;                      // gravity on the ball
@@ -260,7 +260,7 @@ const GROUND_FR = 0.16;               // rolling resistance (per second factor)
 const AIR_FR = 0.88;                  // air drag (per second factor)
 const POSSESS = 2.0;                       // distance to control ball
 const MATCH_SECS = 300;
-const TEAMS = 2, PER_TEAM = 6;             // 1 GK + 5 outfield
+const TEAMS = 2, PER_TEAM = 11;            // 11 a side: 1 GK + 4 defenders + 4 midfielders + 2 forwards
 const GAME_SPEED = 0.9;                     // match pace (1 = real time); a touch under real time keeps it readable
 
 /* ============ renderer / scene ============ */
@@ -280,6 +280,8 @@ function applyGfx(q){
   else if(q==='media'){ renderer.setPixelRatio(Math.min(devicePixelRatio,1.3)); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFShadowMap; }
   else { renderer.setPixelRatio(1); renderer.shadowMap.enabled=false; }
   renderer.shadowMap.needsUpdate=true;
+  // shadows switched on/off: every material must be rebuilt, or the grass keeps drawing the LAST shadow it had (ghost shadows)
+  try{ if(typeof scene!=='undefined') scene.traverse(o=>{ const ms=o.material?(Array.isArray(o.material)?o.material:[o.material]):[]; ms.forEach(m=>{ if(m) m.needsUpdate=true; }); }); }catch(e){}
 }
 applyGfx(gfx);
 
@@ -297,7 +299,7 @@ const scene = new THREE.Scene();
 })();
 scene.fog = new THREE.Fog(0xcfe2f2, 170, 340);
 
-const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.5, 400);
+const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.5, 650);
 
 const amb = new THREE.HemisphereLight(0xdcecff, 0x4a7a44, 1.25);
 scene.add(amb);
@@ -307,8 +309,8 @@ sun.castShadow = true;
 sun.shadow.mapSize.set(2048,2048);
 sun.shadow.bias=-0.0004; sun.shadow.radius=3;
 const sc = sun.shadow.camera;
-sc.near=10; sc.far=240; sc.left=-80; sc.right=80; sc.top=80; sc.bottom=-80;
-scene.add(sun);
+sc.near=10; sc.far=260; sc.left=-85; sc.right=85; sc.top=85; sc.bottom=-85;
+scene.add(sun); scene.add(sun.target);
 const fill = new THREE.DirectionalLight(0xbcd4ff, 0.35);   // soft sky fill from the opposite side
 fill.position.set(-30,40,-20); scene.add(fill);
 
@@ -326,7 +328,7 @@ function buildPitch(){
     scene.add(m);
   }
   // grass surround (keeps a green field beyond the lines, no boards)
-  const ap = new THREE.Mesh(new THREE.PlaneGeometry(320,260),
+  const ap = new THREE.Mesh(new THREE.PlaneGeometry(HALF_W*2+180,HALF_L*2+180),
     new THREE.MeshStandardMaterial({color:0x2f8742,roughness:1}));
   ap.rotation.x=-Math.PI/2; ap.position.y=-0.02; ap.receiveShadow=true; scene.add(ap);
 
@@ -349,7 +351,7 @@ function buildPitch(){
   line(HALF_W*2, t, 0, HALF_L); line(HALF_W*2, t, 0, -HALF_L);
   line(t, HALF_L*2, HALF_W,0);  line(t, HALF_L*2, -HALF_W,0);
   line(HALF_W*2, t, 0, 0);
-  arc(12.5,0,0,0,Math.PI*2); dot(0,0);                // center circle + spot
+  arc(17,0,0,0,Math.PI*2); dot(0,0);                  // center circle + spot
   // corner arcs (quarter circles bulging into the pitch)
   const cr=1.6;
   arc(cr,-HALF_W,-HALF_L,0,Math.PI/2);
@@ -357,7 +359,7 @@ function buildPitch(){
   arc(cr, HALF_W, HALF_L,Math.PI,Math.PI/2);
   arc(cr,-HALF_W, HALF_L,Math.PI*1.5,Math.PI/2);
   // penalty + goal areas per end (proportioned to the pitch)
-  const BW=23, B18=19, SW6=13, B6=7, pspot=14, parc=11;
+  const BW=32, B18=27, SW6=16, B6=10, pspot=19, parc=14;
   const ha=Math.acos(THREE.MathUtils.clamp((B18-pspot)/parc,-1,1));  // half-angle of the visible "D"
   [-1,1].forEach(s=>{
     const gl=s*HALF_L;
@@ -718,27 +720,27 @@ spawnTeam(0); spawnTeam(1);
 // when a team is a man (or more) down, the remaining outfielders cover the key roles
 function assignRoles(){
   [0,1].forEach(t=>{
-    const avail=players.filter(p=>p.team===t&&!p.gk&&!p.sentOff).sort((a,b)=>a.idx-b.idx);
-    // fill the key roles first as players are lost: CB, striker, wings, then central mid
-    const slots = avail.length>=5?[1,2,3,4,5] : avail.length===4?[1,2,3,5]
-                : avail.length===3?[1,2,5] : avail.length===2?[1,5] : [1];
-    avail.forEach((p,i)=>{ p.roleIdx = slots[i] || 1; });
+    // each player keeps his position in the 4-4-2 (a red card simply leaves a gap the shape covers)
+    players.forEach(p=>{ if(p.team===t) p.roleIdx=p.idx; });
     players.forEach(p=>{ if(p.team===t&&p.gk) p.roleIdx=0; });
   });
 }
 
 /* formations — one player per position, spread out (blue attacks +Z; red attacks -Z):
    0 GK · 1 left-def · 2 right-def · 3 left-wing · 4 right-wing · 5 striker */
-const FORM=[
-  [[0,-HALF_L+2],[-15,-27],[15,-27],[-25,7],[25,7],[0,24]],    // blue
-  [[0, HALF_L-2],[ 15, 27],[-15, 27],[ 25,-7],[-25,-7],[0,-24]] // red mirrored
-];
+// 0 GK · 1 LB · 2 CB · 3 CB · 4 RB · 5 LM · 6 CM · 7 CM · 8 RM · 9 second striker · 10 striker
+const _W=HALF_W, _L=HALF_L;
+const FORM_B=[[0,-_L+2],[-0.62*_W,-0.5*_L],[-0.2*_W,-0.6*_L],[0.2*_W,-0.6*_L],[0.62*_W,-0.5*_L],
+              [-0.6*_W,-0.14*_L],[-0.2*_W,-0.22*_L],[0.2*_W,-0.22*_L],[0.6*_W,-0.14*_L],[-0.15*_W,0.16*_L],[0.12*_W,0.24*_L]];
+const FORM=[ FORM_B, FORM_B.map(f=>[-f[0],-f[1]]) ];          // red mirrored
+function isDef(p){ return p.roleIdx>=1 && p.roleIdx<=4; }
+function isMid(p){ return p.roleIdx>=5 && p.roleIdx<=8; }
+function isFwd(p){ return p.roleIdx>=9; }
 const STRIKER=PER_TEAM-1;                              // last index = striker (5)
 // kickoff layout: every player inside their OWN half, well spaced (blue z<0, red z>0)
-const KICK=[
-  [[0,-HALF_L+2],[-15,-31],[15,-31],[-25,-15],[25,-15],[0,-2]], // blue
-  [[0, HALF_L-2],[ 15, 31],[-15, 31],[ 25, 15],[-25, 15],[0, 2]] // red
-];
+const KICK_B=[[0,-_L+2],[-0.6*_W,-0.46*_L],[-0.2*_W,-0.55*_L],[0.2*_W,-0.55*_L],[0.6*_W,-0.46*_L],
+              [-0.58*_W,-0.2*_L],[-0.2*_W,-0.24*_L],[0.2*_W,-0.24*_L],[0.58*_W,-0.2*_L],[-0.18*_W,-0.05*_L],[0,-2]];
+const KICK=[ KICK_B, KICK_B.map(f=>[-f[0],-f[1]]) ];
 function resetPositions(kickTeam){
   assignRoles();
   players.forEach(p=>{
@@ -1563,7 +1565,7 @@ let ownerPrev=null, ownerT=0;       // who has the ball, and since when (first-t
 let lastKicker=null;                // last player to strike the ball (the scorer)
 let celeb=null;                     // goal celebration in progress
 let chilenaReq=0, chilenaWant='shot';   // you tapped DISPARO/PASE with the ball up in the air near your player
-const PEN_DIST=14;                  // penalty spot distance from the goal line (scaled to our box)
+const PEN_DIST=19;                  // penalty spot distance from the goal line (scaled to our box)
 const penReticle=(function(){ const g=new THREE.Group();
   const ring=new THREE.Mesh(new THREE.RingGeometry(0.55,0.78,36), new THREE.MeshBasicMaterial({color:0xffe14a,transparent:true,opacity:0.95,side:THREE.DoubleSide,depthTest:false}));
   const dot=new THREE.Mesh(new THREE.CircleGeometry(0.13,18), new THREE.MeshBasicMaterial({color:0xffe14a,side:THREE.DoubleSide,depthTest:false}));
@@ -2502,23 +2504,24 @@ function stepPlayer(p,dt){
     // shift formation: push forwards into attack when we have the ball, drop back otherwise
     let bx=base[0]+ball.position.x*.35;
     let bz;
-    const deepFwd=(p.roleIdx===3||p.roleIdx===4||p.roleIdx===STRIKER);  // wingers + striker run high
+    const deepFwd=isFwd(p)||p.roleIdx===5||p.roleIdx===8;                  // forwards + wide midfielders run high
     if(weHave){
       // attacking: the striker + both wings push on and ONE defender steps up to support the counter,
       // while the OTHER defender stays home to cover — so the whole team joins in but one stays back
-      if(p.roleIdx===1){                                     // one defender holds deep as the lone cover
-        bz=(p.team===0?-5:12) + ball.position.z*(p.team===0?0.12:0.08);   // (your last man steps up a bit more)
-      }else if(p.roleIdx===2){                               // the other defender pushes up to support play
-        bz=(p.team===0?6:-6) + ball.position.z*0.22;
-      }else if(p.roleIdx===STRIKER){                          // striker leads the line into the box
-        bz=(p.team===0?36:-36) + ball.position.z*0.12;
-      }else{                                                  // wingers (3,4): push deep and wide
-        bz=(p.team===0?30:-30) + ball.position.z*0.12;
+      const sg=p.team===0?1:-1;
+      if(p.roleIdx===2||p.roleIdx===3){                      // centre-backs hold the back line (yours a touch higher)
+        bz=sg*(p.team===0?-0.3:-0.36)*HALF_L + ball.position.z*0.18;
+      }else if(p.roleIdx===1||p.roleIdx===4){                // full-backs push on down the flanks
+        bz=sg*(-0.06*HALF_L) + ball.position.z*0.3;
+      }else if(isMid(p)){                                     // midfield supports the attack
+        bz=sg*((p.roleIdx===5||p.roleIdx===8)?0.22:0.1)*HALF_L + ball.position.z*0.3;
+      }else{                                                  // the two forwards lead the line into the box
+        bz=sg*(p.roleIdx===STRIKER?0.42:0.34)*HALF_L + ball.position.z*0.12;
       }
     }else{
       // defending: keep the striker up as an outlet, everyone else drops back to defend
       if(p.roleIdx===STRIKER){
-        bz=(p.team===0?12:-12) + ball.position.z*0.1;
+        bz=(p.team===0?1:-1)*0.12*HALF_L + ball.position.z*0.1;
       }else{
         bz=base[1]*0.7 + ball.position.z*0.3;                // recover toward own half
       }
@@ -2564,7 +2567,7 @@ function stepPlayer(p,dt){
       if(!isTaker && !(setPieceLabel==='TIRO LIBRE' && spFKnear) && (setPieceLabel==='TIRO LIBRE'||setPieceLabel==='FUERA DE JUEGO')){
         const og=p.team===0?-HALF_L:HALF_L, depth=Math.abs(ball.position.z-og);
         if(p.roleIdx===STRIKER){ fz=THREE.MathUtils.clamp(ball.position.z+dir*14,-HALF_L+8,HALF_L-8); fx=f[0]*0.6; }   // one man stays up for the counter
-        else { const lane=[0,0.35,0.55,0.75,0.45][p.roleIdx%5];
+        else { const lane = isDef(p) ? 0.25+0.05*(p.roleIdx%2) : isMid(p) ? 0.5+0.06*(p.roleIdx%2) : 0.72;
           fz=og+dir*THREE.MathUtils.clamp(depth*lane+8, 8, Math.max(8,depth-10));                        // back into his zone, goal-side of the ball
           fx=f[0]*0.8+ball.position.x*0.25; }
       }
@@ -2630,8 +2633,11 @@ function stepPlayer(p,dt){
         // drop into the line, keeping your lane (formation side), shading onto a nearby man to mark
         let tx=base[0]*0.75 + ball.position.x*0.35;
         let tz=lineZ;
+        if(isMid(p)) tz = gdir>0 ? Math.max(lineZ+9, ownGoalZ+minDepth+6) : Math.min(lineZ-9, ownGoalZ-minDepth-6);       // midfield line in front of the back four
+        else if(isFwd(p)) tz = lineZ + gdir*22;                                                                             // forward screens the build-up
+        else tz = gdir>0 ? Math.max(lineZ-4, ownGoalZ+minDepth-2) : Math.min(lineZ+4, ownGoalZ-minDepth+2);              // the back four
         const m=pickMark(p);
-        if(m && Math.abs(m.pos.x-tx)<10){
+        if(m && Math.abs(m.pos.x-tx)<10 && !isFwd(p)){
           tx=m.pos.x;
           tz = gdir>0 ? Math.min(lineZ, m.pos.z-2) : Math.max(lineZ, m.pos.z+2);  // mark goal-side, but never ahead of the line
         }
@@ -2682,6 +2688,12 @@ function stepPlayer(p,dt){
   if(p.gk && (p.gkKickT||0)>0) spd = (!p.gkKicked && p.gkKickT>p.gkKickHit) ? p.gkKickRun : 0;   // drop-kick run-up pace, then planted
   p._dRaw=desired.length();
   if(throwTimer>0 && !p.gk && p!==setPieceTaker && p._dRaw<3.5) spd*=Math.max(0.22,p._dRaw/3.5);   // glide into position, then settle
+  // in open play too: a man walking into his SHAPE position eases in and settles instead of overshooting and
+  // turning back every frame (that back-and-forth was the 'hitching'); anyone chasing the ball keeps full pace
+  if(!isCtrl && !p.gk && throwTimer<=0 && owner!==p && passReceiver!==p && !(icpt[p.team]&&icpt[p.team].p===p) && recvMark[p.team]!==p
+     && !(defRoleCache[p.team] && defRoleCache[p.team].presser===p) && !(pressTimer>0 && p.team===0)){
+    const dl=p._dRaw;
+    if(dl<0.25) desired.set(0,0,0); else spd=Math.min(spd, dl*1.7); }   // speed in proportion to the gap: he tracks his spot smoothly (no overshoot, no stop-start)
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
     if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
@@ -2722,7 +2734,7 @@ function stepPlayer(p,dt){
     else           p.pos.z=Math.max(p.pos.z, 1.2);
     if(p.team!==kickoffTeam){
       const d=Math.hypot(p.pos.x,p.pos.z);
-      if(d<13 && d>0.01){ const s=13/d; p.pos.x*=s; p.pos.z*=s; }     // defenders out of the circle
+      if(d<17.5 && d>0.01){ const s=17.5/d; p.pos.x*=s; p.pos.z*=s; }     // defenders out of the circle
       if(p.team===0) p.pos.z=Math.min(p.pos.z,-1.2); else p.pos.z=Math.max(p.pos.z, 1.2);
     }
   }
@@ -2748,7 +2760,7 @@ function stepPlayer(p,dt){
   if((p.runGamble||0)>0) p.runGamble-=dt;
   else if(!p.gk){
     // forwards time runs in behind; the CPU's attackers gamble a little more often to make chances
-    const rate = (p.team===1 && (p.roleIdx===3||p.roleIdx===4||p.roleIdx===STRIKER)) ? dt*0.16 : dt*0.045;
+    const rate = (p.team===1 && (isFwd(p)||p.roleIdx===5||p.roleIdx===8)) ? dt*0.16 : (isFwd(p)?dt*0.06:dt*0.03);
     if(Math.random()<rate) p.runGamble=1.0;
   }
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else { p.holdT=0; p.longRoll=undefined; }  // AI possession timer
@@ -2777,10 +2789,15 @@ function stepPlayer(p,dt){
   else if(owner===p && !p.gk && p.speed>3.6 && p.act['pk:Dribble'] && ball.position.y<0.9) state='dribble';   // running WITH the ball
   else if(p.gk && p.speed>0.7 && p.speed<11 && p.act['gk:Goalkeeper_Sidestep'] && Math.abs(p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading))>p.speed*0.6) state='side';   // shuffling across his goal, facing the play
   else if(p.readyClip && !p.gk && owner!==p && p.speed<1.4 && (throwTimer>0 || kickoffHold>0 || awaitKickoffPass || (owner && owner.gk && owner.team!==p.team))) state='ready';
-  else { const wasRun=/Running_|^run$/.test(p.curAnim||''), wasWalk=p.curAnim==='walk';
-    if(p.speed>(wasRun?2.9:4.0)) state='run';                       // break into a run (and stay in it until he really slows)
-    else if(p.speed>(wasWalk||wasRun?0.35:0.8)) state='walk';
-    else state='idle'; }
+  else { const prev=p.locoState||'idle';
+    let cand;
+    if(p.speed>(prev==='run'?2.4:4.6)) cand='run';                   // wide margins: no flicker around the thresholds
+    else if(p.speed>(prev==='idle'?1.0:0.25)) cand='walk';
+    else cand='idle';
+    p.locoT=(p.locoT||0)+dt;
+    if(cand!==prev && p.locoT<0.4 && !(cand==='run' && p.speed>7)) cand=prev;   // hold each gait a moment (unless he really bursts off)
+    if(cand!==prev){ p.locoState=cand; p.locoT=0; }
+    state=cand; }
   driveAnim(p, state, p.speed, dt);
   m.userData.ring.visible=(p===ctrlPlayer());
 }
@@ -3187,14 +3204,16 @@ function stepReferee(dt){
 const camState={x:HALF_W+30,y:23,z:0};
 function stepCamera(dt){
   const z=(typeof camZoom==='number')?camZoom:1;
-  const tx=HALF_W + 30*z - ball.position.x*0.14;
-  const tz=THREE.MathUtils.clamp(ball.position.z*0.7,-22,22);
-  const ty=23*z;
+  const tx=ball.position.x*0.5 + 64*z;
+  const tz=THREE.MathUtils.clamp(ball.position.z*0.85,-HALF_L*0.78,HALF_L*0.78);
+  const ty=27*z;
   camState.x+=(tx-camState.x)*Math.min(1,dt*1.8);
   camState.z+=(tz-camState.z)*Math.min(1,dt*2.2);
   camState.y+=(ty-camState.y)*Math.min(1,dt*1.8);
   camera.position.set(camState.x,camState.y,camState.z);
-  camera.lookAt(0, 1.4, ball.position.z*0.5);
+  camState.lx=(camState.lx||0)+(ball.position.x*0.5-6-(camState.lx||0))*Math.min(1,dt*2);
+  camera.lookAt(camState.lx, 1.4, camState.z*0.92);
+  sun.position.set(camState.lx+38,78,camState.z+26); sun.target.position.set(camState.lx,0,camState.z); sun.target.updateMatrixWorld();
 }
 
 /* ============ minimap ============ */
