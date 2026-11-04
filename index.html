@@ -1163,7 +1163,7 @@ function keyDir(){
   if(x||y){const l=Math.hypot(x,y);moveDir.set(x/l,y/l);} }
 
 // action buttons: A/B/C charge power while held (release to fire); defense actions are instant
-const CHARGE_MAX=0.9;
+const CHARGE_MAX=0.72;               // the power bar fills a bit quicker
 let charge={which:null,t0:0};
 function isKickAction(which){
   if(throwTimer>0 && throwTeam===0 && which==='B') return true;   // taking a throw-in
@@ -1365,12 +1365,12 @@ function doAction(which, power){
         if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
         // nobody in that direction -> drive a firm ground ball exactly where you aim
         pl.heading=Math.atan2(jd.x,jd.z); pl.faceLock=0.45;   // face the aim so the kick animation points the right way
-        queueKick(pl, jd, ()=>{ ballAtRightFoot(pl); ballVel.copy(jd).multiplyScalar(39+34*power); ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); return;
+        queueKick(pl, jd, ()=>{ ballAtRightFoot(pl); ballVel.copy(jd).multiplyScalar(43+38*power); ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); return;
       }
       const tgt=passTarget(pl);              // no aim -> pick the best open teammate forward
       if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
       { const ad=aimDir(pl);
-        queueKick(pl, ad, ()=>{ ballAtRightFoot(pl); ballVel.copy(ad).multiplyScalar(37+32*power); ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); } return;
+        queueKick(pl, ad, ()=>{ ballAtRightFoot(pl); ballVel.copy(ad).multiplyScalar(41+36*power); ballVel.y=0.25; pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); } return;
     }
     { const gz0=pl.team===0?HALF_L:-HALF_L; let pre;
       if(which==='A') pre = moveDir.lengthSq()>0.05 ? joyVec().normalize() : new THREE.Vector3(0,0,gz0).sub(ball.position).setY(0).normalize();
@@ -1397,7 +1397,7 @@ function doAction(which, power){
       const ty=THREE.MathUtils.clamp(0.7+power*2.4+(Math.random()-0.5)*0.8, 0.4, GOAL_H-0.6);
       const dir=new THREE.Vector3(tx,0,gz).sub(ball.position).setY(0).normalize();
       pl.heading=Math.atan2(dir.x,dir.z); pl.faceLock=0.6; ballAtRightFoot(pl);   // face + strike from the kicking boot
-      aimBallAt(tx,ty,gz,33+41*power);
+      aimBallAt(tx,ty,gz,37+47*power);    // harder shots
       showPower(pl, power);
     }else{                      // ELEVADO (lob/cross) — toward where the joystick points
       const dir=aimDir(pl);
@@ -1405,11 +1405,11 @@ function doAction(which, power){
       const mate=directionalPassTarget(pl,dir);
       if(mate){                                   // a cross dropped onto his HEAD, so he can head it or try a chilena
         const tgt=mate.pos.clone().addScaledVector(mate.vel||new THREE.Vector3(),0.35), to=tgt.sub(ball.position).setY(0); const d=to.length();
-        const T=THREE.MathUtils.clamp(d/(27+14*power),0.65,1.4); to.normalize();   // firmer, quicker cross
+        const T=THREE.MathUtils.clamp(d/(30+17*power),0.6,1.35); to.normalize();   // firmer, quicker cross
         const kk=-Math.log(AIR_FR), corr=kk>1e-4?(1-Math.exp(-kk*T))/(kk*T):1;
         ballVel.copy(to).multiplyScalar(d/T/corr); ballVel.y=(4.6-ball.position.y)/T+GRAV*T/2;
         passReceiver=mate; passSeekT=T+0.3; if(pl.team===0) ctrl=players.indexOf(mate);
-      } else { ballVel.copy(dir).multiplyScalar(25+27*power); ballVel.y=12+9*power; }   // stronger lob that climbs higher
+      } else { ballVel.copy(dir).multiplyScalar(28+31*power); ballVel.y=12.5+9.5*power; }   // stronger lob that climbs higher
       showPower(pl, power);
     }
     }
@@ -1742,7 +1742,10 @@ function aerialTry(p, forced, want){
     const nm = long ? (Math.random()<0.5?'Header_Soccerball_2':'Header_Soccerball_3') : (Math.random()<0.5?'Header_Soccerball':'Header_Soccerball_1');
     const cfg = long ? {hit:1.05, st:0.45, end:1.7} : {hit:0.72, st:0.3, end:1.25}, ts=2.4;   // quick chest control, then straight on with play
     const c=ballAt((cfg.hit-cfg.st)/ts), hv=Math.hypot(ballVel.x,ballVel.z);
-    if(c.y>=2.3 && c.y<=3.9 && hv<38 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?2.8:2.2) && (ownBall || passReceiver===p || Math.random()<0.5)){
+    const nearGoal = Math.abs(goalZ-c.z)<32 && Math.abs(c.x)<GOAL_W*1.4, inDanger = Math.abs(ownZ-c.z)<34;
+    const aiGoesForGoal = !want && p!==ctrlPlayer() && nearGoal && Math.random()<0.7;     // in front of goal the AI attacks the ball (header / chilena)
+    const aiClears = !want && p!==ctrlPlayer() && inDanger && !ownBall && Math.random()<0.6;  // in its own box it heads it away
+    if(!aiGoesForGoal && !aiClears && c.y>=2.3 && c.y<=3.9 && hv<38 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?2.8:2.2) && (ownBall || passReceiver===p || Math.random()<0.5)){
       kind='chest'; name=nm; hit=c; chest=Object.assign({ts},cfg); }
   }
   if(!kind && want==='chestOnly') return false;
@@ -1750,7 +1753,7 @@ function aerialTry(p, forced, want){
   if(!kind && GK['Scissor_Kick'] && p.act['pk:Scissor_Kick']){
     const c=ballAt((GK['Scissor_Kick'].m.kick-CH_ST)/CH_TS);
     const ok = c.y>=2.9 && c.y<=5.6 && Math.abs(goalZ-c.z)<32 && Math.abs(c.x)<GOAL_W*1.1 && Math.hypot(c.x-p.pos.x,c.z-p.pos.z)<(forced?3.2:2.6);
-    if(ok && (want==='shot' ? Math.random()<0.45 : (!forced && Math.random()<0.3))){ kind='chilena'; hit=c; name=Math.random()<0.65?'Scissor_Kick':'Scissor_Kick_1'; }
+    if(ok && (want==='shot' ? Math.random()<0.45 : (!forced && Math.random()<0.35))){ kind='chilena'; hit=c; name=Math.random()<0.65?'Scissor_Kick':'Scissor_Kick_1'; }
   }
   // jumping header window
   if(!kind && GK['Soccer_Header'] && p.act['pk:Soccer_Header']){
@@ -1759,7 +1762,7 @@ function aerialTry(p, forced, want){
       const inRange = Math.abs(goalZ-c.z)<30 && Math.abs(c.x)<GOAL_W*1.2;
       if(want) kind=want;
       else if(inRange) kind='shot';
-      else if(ownBall) kind=null;                                           // our own long ball: let it drop to be controlled
+      else if(ownBall) kind = Math.random()<0.55 ? 'pass' : null;           // our own long ball: knock it on to a mate, or let it drop to control
       else kind = Math.abs(ownZ-c.z)<34 ? 'clear' : 'pass';
       if(kind && !forced && Math.random()>0.8){ p.chCd=0.6; kind=null; }
       if(kind){ hit=c; name=Math.random()<0.6?'Soccer_Header':'Soccer_Header_1'; }
@@ -1807,13 +1810,13 @@ function aerialStrike(p){
   if(p.chKind==='chest'){                       // killed on the chest: it drops just in front of him, under control
     const fw=new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading));
     ball.position.set(p.pos.x+fw.x*0.9, Math.min(Math.max(ball.position.y,2.3),3.6), p.pos.z+fw.z*0.9);
-    ballVel.set(fw.x*2.2, 1.2, fw.z*2.2); owner=null; lastTouch=p.team; p.kickCd=0; passReceiver=p; passSeekT=1.0;
+    ballVel.set(fw.x*3.0, -2.5, fw.z*3.0); owner=null; lastTouch=p.team; p.kickCd=0; passReceiver=p; passSeekT=1.0;   // straight down to his feet
     return;
   }
   if(p.chKind==='chilena' || p.chKind==='shot'){
     const ch=p.chKind==='chilena';
     const tx=(Math.random()<0.5?-1:1)*(1+Math.random()*(GOAL_W/2-2.2)), ty= ch ? 0.7+Math.random()*(GOAL_H-1.6) : 0.4+Math.random()*2.6;
-    aimBallAt(tx,ty,goalZ, ch ? 40+Math.random()*8 : 30+Math.random()*7);
+    aimBallAt(tx,ty,goalZ, ch ? 46+Math.random()*8 : 36+Math.random()*8);   // firmer header / chilena
   } else if(p.chKind==='pass' && p.chMate){
     const m=p.chMate, to=m.pos.clone().sub(ball.position).setY(0); const d=to.length(); const T=THREE.MathUtils.clamp(d/22,0.45,1.4);
     to.multiplyScalar(1/T); ballVel.set(to.x, (BALL_R-ball.position.y)/T+GRAV*T/2, to.z);
@@ -1969,7 +1972,7 @@ function passBallNow(p,target,power){
     scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
     // fall through and play the pass so the ball keeps rolling toward the runner
   }
-  const ps=1.12+0.24*power;                // strike strength: firmer passes, more on a charge
+  const ps=(1.12+0.24*power)*(p.team===0?1.1:1);   // strike strength: firmer passes, more on a charge (yours a bit more)
   // TURN to face the pass so the kick animation (and the right foot) point the right way
   { const d=target.pos.clone().sub(p.pos).setY(0); if(d.lengthSq()>0.02){ p.heading=Math.atan2(d.x,d.z); p.faceLock=0.45; } }
   ballAtRightFoot(p);                      // the ball leaves from the right boot (not the body centre)
@@ -2360,6 +2363,7 @@ function stepPlayer(p,dt){
     p.chT-=dt; p.vel.set(0,0,0);
     if(!p.chDone){ const f=THREE.MathUtils.clamp((p.chT0-p.chT)/Math.max(0.05,p.chT0-p.chHit),0,1); p.pos.lerpVectors(p.chFrom,p.chTo,f); }
     if(!p.chDone && p.chT<=p.chHit){ p.chDone=true; aerialStrike(p); }
+    if(p.chKind==='chest' && p.chDone && (p.chHit-p.chT)>0.16){ p.chT=0; p.chCd=0.3; p.faceLock=0; }   // chested down: play on straight away
     const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
     driveAnim(p,'chilena',0,dt);
     m.userData.ring.visible=(p===ctrlPlayer());
