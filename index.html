@@ -592,6 +592,15 @@ function gkTipOver(p){
   ball.position.y=Math.max(ball.position.y,GOAL_H-0.4);
   p.gkTip=false; p.kickCd=0.8; owner=null; lastTouch=p.team; flashText('¡MANOTAZO!');
 }
+// a strong hand to a hard shot at full stretch: pushed round the post (corner) when he is near it, else beaten away to the side
+function gkParry(p){
+  const gz=p.team===0?-HALF_L:HALF_L, inw=p.team===0?1:-1, out=Math.sign(ball.position.x-p.pos.x)||(Math.random()<0.5?-1:1);
+  if(Math.abs(ball.position.x)>GOAL_W/2-2.2 && Math.sign(ball.position.x)===out && Math.random()<0.7){   // round the post and behind
+    const tx=out*(GOAL_W/2+2.5+Math.random()*5), T=0.4; ballVel.set((tx-ball.position.x)/T, 2.5+Math.random()*2, (gz-inw*0.2-ball.position.z)/T-inw*1.5); }
+  else ballVel.set(out*(13+Math.random()*6), 3+Math.random()*3, inw*(3+Math.random()*4));                    // beaten out to the side: a loose ball in the area
+  ballSpin.set(0,0,0); spinSet=true; kickT=0.1;
+  p.gkParry=false; p.kickCd=0.7; owner=null; lastTouch=p.team;
+}
 // the keeper's facing: straight up the pitch, turned toward the ball by at most ~55 degrees
 function gkFaceHeading(p){
   const fwdH = p.team===0 ? 0 : Math.PI;
@@ -622,7 +631,7 @@ function gkStartSave(p, pred, tz, high, comingOut){
   p.gkFlyFrom=D-Math.max(0,(m.to-st)/ts);                                  // lunge window, in p.dive countdown units
   p.gkFlyTo  =D-Math.max(0.05,((dive?m.land:m.tc)-st)/ts);
   p.gkLunge  =dive?34:24;
-  p.diveType =dive?'dive':'catch';
+  p.diveType =dive?'dive':'catch'; p.gkParry = dive && Math.random()<0.45;
   p.diveDir  =new THREE.Vector3(pred.x-p.pos.x,0,(tz-p.pos.z)*0.3);
   if(p.diveDir.lengthSq()<0.01) p.diveDir.set(0,0,p.team===0?1:-1); p.diveDir.normalize();
   p.faceLock=D;                                                              // keep facing the shot through the move
@@ -1504,6 +1513,7 @@ function doAction(which, power){
     if(setPieceForm>0){ owner=setPieceTaker; spQueued={which,power}; return; }   // pressed early: it's taken the moment it's allowed
     owner=setPieceTaker;
     if(which==='A' && setPieceLabel==='TIRO LIBRE' && spFKnear){ fkShot(p, power, moveDir.lengthSq()>0.05 ? joyVec().normalize() : null); return; }
+    if(setPieceLabel==='SAQUE DE ESQUINA'){ cornerTake(p, moveDir.lengthSq()>0.05 ? joyVec().normalize() : null, power); setPieceTaker=null; return; }
     let tgt=null;
     if(moveDir.lengthSq()>0.05){ const jd=joyVec().normalize(); tgt=directionalPassTarget(setPieceTaker,jd); }
     if(!tgt) tgt=(setPieceLabel==='SAQUE DE BANDA'?throwInTarget(setPieceTaker):null) || passTarget(setPieceTaker) || kickoffPassTarget(setPieceTaker);
@@ -2131,7 +2141,7 @@ function passBallNow(p,target,power){
 // YOUR pass: the team-mate you point at (or, with the stick at rest, the best ball on), read with the same eyes as the
 // CPU — to feet, chipped over a man in the lane, into the space in front of a runner, or long onto a far man
 function humanPass(pl, jd, power){
-  const aim=jd||aimDir(pl), quick=pressureOn(pl)<4.2; let best=null, bs=-1e9;
+  const aim=jd||aimDir(pl), quick=pressureOn(pl)<5; let best=null, bs=-1e9;
   for(const o of passOptions(pl, quick?0.11:PK_W)){
     const tx=(o.aim?o.aim.x:o.q.pos.x)-pl.pos.x, tz=(o.aim?o.aim.z:o.q.pos.z)-pl.pos.z, l=Math.hypot(tx,tz)||1, al=(tx*aim.x+tz*aim.z)/l;
     if(jd){ if(al<0.6) continue; } else if(o.kind==='gk') continue;
@@ -2251,13 +2261,15 @@ function carryPlan(p, pressed){
     if(p.cutIn) tg.set(Math.sign(p.pos.x)*9-p.pos.x,0,gz-sgn*24-p.pos.z); else tg.set(Math.sign(p.pos.x)*(BOX_HALF_W+3)-p.pos.x,0,gz-sgn*8-p.pos.z); }
   tg.normalize();
   const cx=p.carryP?p.carryP.dir.x:Math.sin(p.heading), cz=p.carryP?p.carryP.dir.z:Math.cos(p.heading);
-  let best=null, bs=-1e9, bEsc=0;
+  let best=null, bs=-1e9, bEsc=0, keep=null;
   for(let i=0;i<16;i++){ const a=i/16*Math.PI*2, dx=Math.cos(a), dz=Math.sin(a), px=p.pos.x+dx*8, pz=p.pos.z+dz*8;
     if(Math.abs(px)>HALF_W-2.5 || Math.abs(pz)>HALF_L-1.5) continue;
     let esc=99; for(const o of players){ if(o.team===p.team||o.sentOff||(o.fall||0)>0) continue;
-      esc=Math.min(esc, Math.hypot(o.pos.x-px,o.pos.z-pz)-6.8, Math.hypot(o.pos.x-p.pos.x-dx*3.5,o.pos.z-p.pos.z-dz*3.5)-3.4); }
-    const prog=dx*tg.x+dz*tg.z, sc=prog*(pressed?1.5:2.4)+clampN(esc,-4,6)*(pressed?1.15:0.8)+(dx*cx+dz*cz)*0.9;
+      esc=Math.min(esc, Math.hypot(o.pos.x-px,o.pos.z-pz)-6.8, Math.hypot(o.pos.x-p.pos.x-dx*3.5,o.pos.z-p.pos.z-dz*3.5)-4.3); }
+    const prog=dx*tg.x+dz*tg.z, along=dx*cx+dz*cz, sc=prog*(pressed?1.5:2.4)+clampN(esc,-4,6)*(pressed?1.15:0.8)+along*0.9;
+    if(along>0.9 && (!keep || along>keep.al)) keep={al:along, sc, esc, dir:new THREE.Vector3(dx,0,dz)};      // (his present line)
     if(sc>bs){ bs=sc; best=new THREE.Vector3(dx,0,dz); bEsc=esc; } }
+  if(keep && best && bs-keep.sc<0.7) return {dir:keep.dir, esc:keep.esc, sc:keep.sc};                       // he only changes line for a clearly better one (no zig-zag)
   return best ? {dir:best, esc:bEsc, sc:bs} : null;
 }
 // pressure on the man on the ball: how close the nearest rival will be in a moment (a man sprinting in counts as closer)
@@ -2271,8 +2283,8 @@ function cpuDecide(p, opD, wingRun, dt){
   const hold=p.holdT||0;
   { const dq=Math.hypot(ball.position.x,(p.team===0?HALF_L:-HALF_L)-ball.position.z);
     if(hold<0.12 && opD>2.2 && !(dq<30 && Math.abs(ball.position.x)<GOAL_W)) return false; }   // settle the first touch (in front of goal he hits it first time)
-  if(hold<0.15 || !p.dn){ p.dn=[0,1,2,3,4,5].map(()=>(Math.random()-0.5)*1.0); p.spinOk=Math.random()<0.5; p.cutIn=Math.random()<0.45; p.carryP=null; p.carryT=0; p.decT=0; }   // a little personality per possession (not frame-to-frame flicker)
-  if((p.carryT=(p.carryT||0)-dt)<=0 || !p.carryP){ p.carryP=carryPlan(p, opD<4.5); p.carryT=0.25; }   // re-reads the space around him ~4x a second
+  if(hold<0.15 || !p.dn){ p.dn=[0,1,2,3,4,5].map(()=>(Math.random()-0.5)*1.0); p.spinOk=Math.random()<0.5; p.cutIn=Math.random()<0.55; p.carryP=null; p.carryT=0; p.decT=0; }   // a little personality per possession (not frame-to-frame flicker)
+  if((p.carryT=(p.carryT||0)-dt)<=0 || !p.carryP){ p.carryP=carryPlan(p, opD<5.5); p.carryT=0.25; }   // re-reads the space around him ~4x a second
   if((p.decT=(p.decT||0)-dt)>0) return false; p.decT=0.1;
   const t=p.team, sg=t===0?1:-1, gzT=sg*HALF_L, N=p.dn, Rk=roleOf(p), CB=combo[t], T=TAC[t];
   const bX=ball.position.x, bZ=ball.position.z, bU=bZ*sg, dg=Math.hypot(bX,gzT-bZ)||1, toLine=HALF_L-bU;
@@ -2280,27 +2292,27 @@ function cpuDecide(p, opD, wingRun, dt){
     for(const o of players){ if(o.team===t||o.gk||o.sentOff) continue; const rx=o.pos.x-bX, rz=o.pos.z-bZ, al=rx*gx+rz*gzz;
       if(al>0 && al<Math.min(dg,16) && Math.abs(rx*gzz-rz*gx)<2.4+al*0.08) nBlock++; } }
   const opE=Math.min(opD,pressureOn(p));
-  const clear = nBlock===0 && dg<34 && Math.abs(bX)<GOAL_W+8, pressed=opE<3.2, quick=opE<4.2;
+  const clear = nBlock===0 && dg<34 && Math.abs(bX)<GOAL_W+8, pressed=opE<4.2, quick=opE<5;
   let best=null; const pick=(n,s,a)=>{ if(!best||s>best.s) best={n,s,a}; };
   if(dg<Rk.shoot+6 && Math.abs(bX)<GOAL_W+14)
-    pick('shoot', 9.6-dg*0.16-nBlock*1.3+(clear?3.5:0)-Math.max(0,Math.abs(bX)-GOAL_W/2)*0.12+(CB>=2?0.6:0)+(dg<44 && Math.abs(bX)<20?0.8:0)+(hold>1.0?0.6:0)+(hold>2.0?0.8:0)+N[0]);
+    pick('shoot', 9.6-dg*0.16-nBlock*1.3+(clear?3.5:0)-Math.max(0,Math.abs(bX)-GOAL_W/2)*0.12+(CB>=2?0.6:0)+(dg<44 && Math.abs(bX)<20?0.8:0)+(dg<34?0.7:0)+(hold>1.0?0.6:0)+(hold>2.0?0.8:0)+N[0]);
   if(Rk.cross && Math.abs(bX)>BOX_HALF_W-10 && toLine<46 && hold>=0.2){
     let inBox=0; for(const q of players){ if(q.team===t && q!==p && !q.gk && !q.sentOff && Math.abs(q.pos.z-gzT)<BOX_DEPTH+10 && Math.abs(q.pos.x)<BOX_HALF_W+4) inBox++; }
-    if(inBox) pick('cross', 2.6+inBox*1.1+(toLine<26?1.2:0)+(hold>1.2?0.8:0)+(hold>2.2?1.0:0)-(clear?3:0)+N[1]); }
+    if(inBox) pick('cross', 2.2+inBox*0.7+(toLine<26?1.2:0)+(hold>1.2?0.8:0)+(hold>2.2?1.0:0)-(clear?3:0)+N[1]); }
   if(pressed || hold>=0.22){
-    const urge=(opE<3.2?2.0:opE<5?0.8:0)+(hold>0.9?0.7:0)+(hold>1.8?0.8:0);   // closed down, or on it a while: move it on
+    const urge=(opE<4.2?2.0:opE<6.2?0.8:0)+(hold>0.9?0.7:0)+(hold>1.8?0.8:0);   // closed down, or on it a while: move it on
     let nSafe=0;
     for(const o of passOptions(p, quick?0.11:PK_W)){ if(o.risk<0.3 && o.kind!=='gk') nSafe++;
       if(o.risk>(bU>40?0.72:0.62)) continue;                               // not a ball he would lose more often than not (a bit more daring near their goal)
       let v=o.val+urge*clampN(1-o.risk*2.2,0,1);                            // being hurried favours the SAFE ball, not a hopeful one
       const fwdBall = o.kind!=='gk' && (o.aim?o.aim.z:o.q.pos.z)*sg-bU>10;
       if(fwdBall && T && T.since<4) v+=0.8;                                 // just won it: go forward while they are out of shape
-      if(o.kind==='feet'){ v+=N[3]*0.6+(toLine<68?1.1:0)+(Math.hypot(o.q.pos.x,gzT-o.q.pos.z)<34?0.8:0);   /* around their box: combine, and find the man in front of goal */ if(o.q===p.gotFrom && (p.gotT||0)>0 && opE>4) v-=0.9; }   // (not straight back where it came from)
+      if(o.kind==='feet'){ v+=N[3]*0.6+(toLine<68?1.1:0)+(Math.hypot(o.q.pos.x,gzT-o.q.pos.z)<34?0.8:0)+(Math.abs(o.q.pos.x)<24 && Math.abs(gzT-o.q.pos.z)<42?0.5:0);   /* around their box: combine, and find the man in front of goal */ if(o.q===p.gotFrom && (p.gotT||0)>0 && opE>4) v-=0.9; }   // (not straight back where it came from)
       else if(o.kind==='thru') v+=N[2]*0.6+(CB>=2?0.4:0);
       else if(o.kind==='long'){ if(hold<0.35) continue; v+=N[4]*0.6; }
       else v+=(pressed?1.0:-1.5);                                          // back to the keeper: only when closed down
       pick(o.kind, v, o); }
-    if(bU<-62 && opE<3.6 && nSafe===0) pick('clear', 3.4+(opE<2.4?1.2:0));     // deep, closed down and nothing safe on
+    if(bU<-62 && opE<4.4 && nSafe===0) pick('clear', 3.4+(opE<3?1.2:0));     // deep, closed down and nothing safe on
   }
   if(p.spinOk && GK['Soccer_Spin'] && (p.spinCd||0)<=0 && hold>=0.2 && Rk.line!=='D'){ const fd=nearestOppFront(p,4.8);   // a man right in front of him: roulette past him
     if(fd){ const fdd=fd.pos.distanceTo(p.pos); pick('spin', 3.1+(fdd<3.6?1.3:0)-(dg<22?1.0:0)+N[5]*0.6, fd); } }
@@ -2461,14 +2473,20 @@ function stumbleIfBehind(v, robber){
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
 function cpuSteal(dtS){
   if(awaitKickoffPass||koGrace>0||throwTimer>0||kickoffHold>0||deadTimer>0) return;   // no stealing during any restart
-  if(!owner || !cpuTackler({team:1-owner.team}) || owner.pk2 || owner.gk || (owner.spinT||0)>0 || ((owner.oneT||0)>0 && owner.oneKind==='hurdle')) return;   // never rob the keeper (or a man mid-roulette)
+  if(!owner || owner.pk2 || owner.gk || (owner.spinT||0)>0 || ((owner.oneT||0)>0 && owner.oneKind==='hurdle')) return;   // never rob the keeper (or a man mid-roulette)
   const carrier=owner; dtS=dtS||1/60;
+  const full=cpuTackler({team:1-carrier.team});          // the rival tackles at full strength; your AI team-mates more cautiously (you are the one who goes and wins it)
+  const bx=ball.position.x-carrier.pos.x, bz=ball.position.z-carrier.pos.z, bl=Math.hypot(bx,bz)||1;
   for(const p of players){
     if(p.team===carrier.team||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
-    const dd=p.pos.distanceTo(carrier.pos);
-    // close enough to reach the ball: wins it at a steady rate (more if he comes from the front or you're slow)
+    if(!full && p===ctrlPlayer()) continue;               // your own player: you tackle with the buttons
+    const dx=p.pos.x-carrier.pos.x, dz=p.pos.z-carrier.pos.z, dd=Math.hypot(dx,dz); if(dd>3.9) continue;
+    // close enough to reach the ball: wins it at a steady rate (more if he comes from the front or the carrier is slow);
+    // a carrier with his body between the man and the ball is SHIELDING it: much harder to nick
     const toBall=ball.position.clone().sub(p.pos).setY(0), front=toBall.lengthSq()>0.01 ? toBall.normalize().dot(new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading))) : 1;
-    const rate = (dd<1.55) ? 99 : (dd<3.9 && front>0.2) ? (1.35 + (carrier.speed<6?1.0:0) + (front>0.7?0.5:0)) : 0;
+    const shield = dd>0.01 && (dx*bx+dz*bz)/(dd*bl) < -0.2;
+    let rate = (dd<1.55) ? (shield?2.2:99) : (front>0.2) ? (1.35 + (carrier.speed<6?1.0:0) + (front>0.7?0.5:0))*(shield?0.3:1) : 0;
+    if(!full) rate = dd<1.55 ? Math.min(rate,2.6) : rate*0.4;
     if(rate>0 && Math.random()<rate*dtS){
       const away=p.pos.clone().sub(carrier.pos).setY(0);
       if(away.lengthSq()<0.01) away.set(Math.sin(p.heading),0,Math.cos(p.heading));
@@ -2498,7 +2516,7 @@ function ballDeflect(){
       if(qd<(mine ? POSSESS+0.15 : (kickT>0 ? 1.0 : rivalReach(ballVel.length())))){                                // he gets a foot to it: cushion it in front of him
         const ux=qd>0.01?qx/qd:Math.sin(p.heading), uz=qd>0.01?qz/qd:Math.cos(p.heading);
         ball.position.x=p.pos.x+ux*1.25; ball.position.z=p.pos.z+uz*1.25; ball.position.y=Math.min(ball.position.y,BALL_R+0.2);
-        ballVel.multiplyScalar(0.18); ballVel.y=0; p.trapT=0.3; continue; }
+        ballVel.multiplyScalar(0.18); ballVel.y=0; p.trapT=0.3; lastTouch=p.team; continue; }
     }
     const rad   = p.gk ? 1.9 : 1.45;                    // body size (keepers are a bigger wall)
     const maxY  = p.gk ? GOAL_H : 2.2;
@@ -2515,7 +2533,7 @@ function ballDeflect(){
       ball.position.x=p.pos.x+nx*rad; ball.position.z=p.pos.z+nz*rad;   // place it on the body surface, not past it
       // only respond when moving INTO the body; a small CAPPED vertical pop (never a straight-up rocket)
       if(vn<0){
-        const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz;   // reflect off the body
+        const k=p.gk?1.9:1.6; ballVel.x-=k*vn*nx; ballVel.z-=k*vn*nz; lastTouch=p.team;   // reflect off the body
         const damp=p.gk?0.5:0.85; ballVel.x*=damp; ballVel.z*=damp;     // lose a little pace
         ballVel.y=Math.min(ballVel.y + (p.gk?0.8:1.0), p.gk?3.5:2.0);
       }
@@ -2743,12 +2761,14 @@ function tacAttack(t,T,dt){
     const ins = Math.abs(cx)>16 ? -Math.sign(cx) : ((nr && nr.pos.x>cx) ? -1 : 1);        // toward the middle when wide; away from the nearest rival when central
     const edge = Math.abs(cx)>HALF_W-14, away = nr ? (Math.sign(cx-nr.pos.x)||ins) : -ins;
     const SL=[ ['F', ins*11, 15], ['L', edge?ins*20:-ins*17, edge?6:3], ['B', (edge?ins:away)*9, -14] ];
-    for(const sl of SL){ const key=sl[0]; let bpx=0, bpu=0, bsc=-1e9;
+    const RK=T.rk||(T.rk={});
+    for(const sl of SL){ const key=sl[0]; let bpx=0, bpu=0, bsc=-1e9, brot=0;
       for(const rot of [0,0.45,-0.45]){ const cs=Math.cos(rot), sn=Math.sin(rot);
         const px=clampN(cx+sl[1]*cs-sl[2]*sn,-HALF_W+4,HALF_W-4), pu=clampN(Math.min(cu+sl[1]*sn+sl[2]*cs, key==='B'?1e9:cap),-HALF_L+6,HALF_L-6);
         let md=9; for(const o of players){ if(o.team===t||o.sentOff||o.gk) continue; const d=Math.hypot(o.pos.x-px,o.pos.z*sg-pu); if(d<md) md=d; }
-        const sc=md*0.5-laneBlock(t,cx,cz,px,pu*sg)*1.6-(rot?0.35:0)-(Math.hypot(px-cx,pu-cu)<7?3:0);
-        if(sc>bsc){ bsc=sc; bpx=px; bpu=pu; } }
+        const sc=md*0.5-laneBlock(t,cx,cz,px,pu*sg)*1.6-(rot?0.35:0)-(Math.hypot(px-cx,pu-cu)<7?3:0)+(RK[key]===rot?0.7:0);   // (the angle he already holds is kept unless another is clearly better)
+        if(sc>bsc){ bsc=sc; bpx=px; bpu=pu; brot=rot; } }
+      RK[key]=brot;
       let bq=null, bc=1e9;
       for(const p of out){ if(p===car||taken.has(p)||p.run||(p.fall||0)>0) continue; const sh=SHP[p.code], D=sh.dl==='D';
         if(key==='F' && (D||p.code==='CDM'||p.code==='LDM'||p.code==='RDM')) continue;
@@ -2762,8 +2782,9 @@ function tacAttack(t,T,dt){
   // --- everyone else drifts into the open pocket near his position (re-read a couple of times a second, with memory)
   for(const p of out){ const S=p.slot; if(S.kind!=='atk') continue;
     p.spT=(p.spT||0)-dt;
-    if(p.spT<=0){ p.spT=0.4+Math.random()*0.3; spaceShift(p,T,car,cap); }
-    S.x=clampN(S.x+(p.spDx||0),-HALF_W+4,HALF_W-4); S.u=Math.min(S.u+(p.spDu||0), SHP[p.code].dl==='D'?1e9:cap); }
+    if(p.spT<=0){ p.spT=0.5+Math.random()*0.4; spaceShift(p,T,car,cap); }
+    const kq=Math.min(1,dt*2.5); p.spX=(p.spX||0)+((p.spDx||0)-(p.spX||0))*kq; p.spU=(p.spU||0)+((p.spDu||0)-(p.spU||0))*kq;   // he drifts into the pocket (no darting about)
+    S.x=clampN(S.x+p.spX,-HALF_W+4,HALF_W-4); S.u=Math.min(S.u+p.spU, SHP[p.code].dl==='D'?1e9:cap); }
   // --- runs
   for(const p of out){ const r=p.run; if(!r) continue; const S=p.slot; r.t-=dt;
     const ux=r.x, uu=(r.kind==='thru'||r.kind==='go')?Math.min(r.u,cap):r.u;
@@ -2786,7 +2807,7 @@ function spaceShift(p,T,car,cap){
       if(o.team!==t){ if(d<md) md=d; } else { const dd = o===car ? d : Math.hypot(o.slot.x-cx,o.slot.u-cu); if(dd<mate) mate=dd; } }
     const ll=Math.hypot(cx-fx,cz-fz);
     const sc=Math.min(md,11)*0.9 - (ll<52?laneBlock(t,fx,fz,cx,cz)*1.5:0) - Math.hypot(dx,du)*0.25 - (mate<8?(8-mate)*0.8:0)
-             - Math.hypot(dx-ox,du-ou)*0.12 + (D?0:du*0.04);
+             - Math.hypot(dx-ox,du-ou)*0.12 + (Math.hypot(dx-ox,du-ou)<1?0.9:0) + (D?0:du*0.04);
     if(sc>bsc){ bsc=sc; bx=cx-hx; bu=cu-hu; } }
   p.spDx=bx; p.spDu=bu;
 }
@@ -2948,14 +2969,14 @@ function stepPlayer(p,dt){
       if(Math.random()<0.6) fkShot(p, 0.75+Math.random()*0.25, null); else p.fkPassOnly=true;
     }
     if(throwTimer>0 && setPieceTaker===p && setPieceForm<=0 && isCpu(p) && !setPieceGK && (p.holdT||0)>0.4 && !(setPieceLabel==='TIRO LIBRE' && spFKnear && !p.fkPassOnly)){   // CPU plays once everyone's set
-      const tgt=(setPieceLabel==='SAQUE DE BANDA'?throwInTarget(p):null) || passTarget(p) || kickoffPassTarget(p);
-      if(tgt){ passBall(p,tgt); setPieceTaker=null; }
+      if(setPieceLabel==='SAQUE DE ESQUINA'){ cornerTake(p,null,0.85); setPieceTaker=null; }
+      else { const tgt=(setPieceLabel==='SAQUE DE BANDA'?throwInTarget(p):null) || passTarget(p) || kickoffPassTarget(p);
+        if(tgt){ passBall(p,tgt); setPieceTaker=null; } }
     }
     desired.set(0,0,0); p.vel.set(0,0,0);
   }else if(deadTimer>0){
-    // dead ball after a whistle: everyone jogs to their proper formation position, nobody chases
-    const f=FORM[p.team][p.roleIdx];
-    desired.set(f[0]-p.pos.x, 0, f[1] - p.pos.z);
+    // dead ball after a whistle: everyone eases toward his place in the shape, nobody chases
+    desired.set(p.slot.x-p.pos.x, 0, p.slot.z-p.pos.z);
     if(desired.lengthSq()<0.25) desired.set(0,0,0);
   }else if(isCtrl && !(throwTimer>0 && owner!==p && (keyDir(), moveDir.lengthSq()<0.05))){
     keyDir();
@@ -3119,49 +3140,26 @@ function stepPlayer(p,dt){
       const gs=new THREE.Vector3(0,0,ogz).sub(r).setY(0).setLength(2.6);
       desired.set(r.x+gs.x-p.pos.x,0,r.z+gs.z-p.pos.z);
     }else if(throwTimer>0){
-      // set-piece: players shuffle depending on the restart and whether it's for or against us.
-      // Taking side pushes UP on a throw-in / free kick (attack); the other side drops BACK to defend.
-      const f=FORM[p.team][p.roleIdx];
-      const dir=p.team===0?1:-1;                         // this team's attacking direction in z
-      const isTaker=(p.team===throwTeam);
-      let adv;
-      if(isTaker){
-        adv = setPieceLabel==='SAQUE DE BANDA' ? 15      // throw-in for us: push well up the pitch to support
-            : setPieceLabel==='TIRO LIBRE'     ? 28      // free kick for us: everyone pushes up to attack it
-            : setPieceLabel==='SAQUE DE META'  ? 7       // goal kick: spread and come to receive
-            : 14;                                        // offside free kick: push up too
-      }else{
-        adv = setPieceLabel==='SAQUE DE BANDA' ? -8      // defending a throw-in: drop deeper
-            : setPieceLabel==='SAQUE DE META'  ? -4
-            : -26;                                       // free kick / offside against us: drop right back to defend
-      }
-      let fz=THREE.MathUtils.clamp(f[1]*0.5 + ball.position.z*0.3 + dir*adv, -HALF_L+3, HALF_L-3), fx=f[0];
-      if(isTaker && p!==setPieceTaker && (setPieceLabel==='TIRO LIBRE'||setPieceLabel==='FUERA DE JUEGO')) fz=keepOnsideZ(p.team,fz);   // push up, but stay onside
-      if(setPieceLabel==='SAQUE DE BANDA' && p.tinSpot){ fx=p.tinSpot.x; fz=p.tinSpot.z; }   // coming short to take the throw
-      if(!isTaker && !(setPieceLabel==='TIRO LIBRE' && spFKnear) && (setPieceLabel==='TIRO LIBRE'||setPieceLabel==='FUERA DE JUEGO')){
-        const og=p.team===0?-HALF_L:HALF_L, depth=Math.abs(ball.position.z-og);
-        if(p.roleIdx===STRIKER){ fz=THREE.MathUtils.clamp(ball.position.z+dir*14,-HALF_L+8,HALF_L-8); fx=f[0]*0.6; }   // one man stays up for the counter
-        else { const lane = isDef(p) ? 0.25+0.05*(p.roleIdx%2) : isMid(p) ? 0.5+0.06*(p.roleIdx%2) : 0.72;
-          fz=og+dir*THREE.MathUtils.clamp(depth*lane+8, 8, Math.max(8,depth-10));                        // back into his zone, goal-side of the ball
-          fx=f[0]*0.8+ball.position.x*0.25; }
-      }
-      if(setPieceLabel==='SAQUE DE META'){
-        const og=throwTeam===0?-HALF_L:HALF_L, odir=throwTeam===0?1:-1, rl=LINEUP[p.team][p.roleIdx];
-        if(isTaker){
-          if(rl==='LCB'||rl==='RCB'){ fx=(rl==='LCB'?-1:1)*(BOX_HALF_W-7); fz=og+odir*(BOX_DEPTH-7); }              // split wide in the box: the short option
-          else if(rl==='LB'||rl==='RB'){ fx=(rl==='LB'?-1:1)*(HALF_W-10); fz=og+odir*(BOX_DEPTH+12); }             // full-backs wide, a bit higher
-          else if(rl==='CDM'||rl==='LDM'||rl==='RDM'){ fz=og+odir*(BOX_DEPTH+9); fx=f[0]*0.6; }                     // the holding man shows for it outside the area
-        } else if(Math.abs(fz-og)<BOX_DEPTH+2 && Math.abs(fx)<BOX_HALF_W+2) fz=og+odir*(BOX_DEPTH+3);                // rivals: outside the area until it's taken
-      }
-      if(p.spJit){ fx+=p.spJit.x; fz+=p.spJit.z; }                                                 // everyone takes a slightly different spot (not robotic)
-      if(setPieceLabel==='TIRO LIBRE' && spFKnear){
+      // restart: both sides take up their normal shapes round the ball (the side taking it opens up and shows for it, the
+      // other gets compact, goal-side and marks) — plus what each restart needs: the wall, the box, the corner...
+      const f=FORM[p.team][p.roleIdx], dir=p.team===0?1:-1;      // dir: this team's attacking direction in z
+      let fx=S.x, fz=S.z, jit=true;
+      if(setPieceLabel==='SAQUE DE ESQUINA'){ jit=false;
+        if(p.cornerMark && !p.cornerMark.sentOff){ const m=cornerMarkSpot(p); fx=m.x; fz=m.z; }      // goal-side of his man
+        else if(p.cornerPt){ fx=p.cornerPt.x; fz=p.cornerPt.z; }
+      }else if(setPieceLabel==='SAQUE DE META'){
+        const og=throwTeam===0?-HALF_L:HALF_L, odir=throwTeam===0?1:-1;
+        if(p.team!==throwTeam && Math.abs(fz-og)<BOX_DEPTH+3 && Math.abs(fx)<BOX_HALF_W+3) fz=og+odir*(BOX_DEPTH+3.5);   // rivals: outside the area until it's taken
+      }else if(setPieceLabel==='TIRO LIBRE' && spFKnear){ jit=false;
         if(p.team!==throwTeam){
           if(p.wallPt){ fx=p.wallPt.x; fz=p.wallPt.z; }                                   // in the WALL
           else { const og=p.team===0?-HALF_L:HALF_L; fx=f[0]*0.5+ball.position.x*0.12; fz=og+dir*(5+((p.roleIdx*7)%4)*2.6); }   // the rest drop DEEP into the box
         }else if(p!==setPieceTaker){                                                       // attackers pile into the box (onside)
           const tg=p.team===0?HALF_L:-HALF_L; fx=f[0]*0.55; fz=keepOnsideZ(p.team, tg-dir*(BOX_DEPTH-4+((p.roleIdx*5)%3)*2.5));
         }
+        if(p.spJit){ fx+=p.spJit.x; fz+=p.spJit.z; }
       }
+      if(jit && p.spJit && S.kind!=='press'){ fx+=p.spJit.x*0.5; fz+=p.spJit.z*0.5; }     // everyone takes a slightly different spot (not robotic)
       if(owner===p) desired.set(0,0,0);
       else if(p.team!==throwTeam && !p.wallPt){
         const away=p.pos.clone().sub(ball.position).setY(0);
@@ -3177,7 +3175,7 @@ function stepPlayer(p,dt){
       let acted=false;
       // (the rival decides below, by scoring every option)
       // pressure: nearest opponent distance -> pass sooner when closed down (one-touch feel)
-      let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
+      let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));}); p.opD=opD;
       const cpu=isCpu(p), toGL=HALF_L-ball.position.z*(p.team===0?1:-1);       // toGL: how far the ball is from the goal he attacks
       const wingRun = cpu && roleOf(p).cross && Math.abs(p.pos.x)>BOX_HALF_W-10 && toGL<80 && opD>2.4;   // a winger in space: run it down the line to cross
       // only the CPU plays by itself; your blue players never kick on their own — you decide
@@ -3198,8 +3196,9 @@ function stepPlayer(p,dt){
             if(Math.random()<dt*(behind?1.5:danger?1.0:0.22)*roleOf(p).slide){ p.slide=0.78; p.slideMax=0.78; p.slideCd=1.9; } } }
       }
     }
-    // PRESIÓN: pulls only the two nearest blue defenders onto the ball, the rest keep their shape
-    if(p.team===0 && pressTimer>0 && !weHave && ballRank(p)<=1){
+    // PRESIÓN: the presser and the man covering him both go for the ball (chosen by the shape, so a centre-back
+    // doesn't leave the line for a ball in midfield); the rest keep their shape
+    if(p.team===0 && pressTimer>0 && !weHave && TAC[0] && (p===TAC[0].presser || p===TAC[0].second)){
       desired.copy(ball.position).sub(p.pos).setY(0);
     }
   }
@@ -3213,9 +3212,11 @@ function stepPlayer(p,dt){
   if((p.dive||0)>0){ const fly=!p.gkClip || (p.dive<=p.gkFlyFrom && p.dive>=p.gkFlyTo); if(fly) spd=Math.max(spd,p.gkClip?p.gkLunge:34); }   // keeper dive lunge
   if(isCtrl && pressTimer>0) spd=Math.max(spd,18);   // press charge
   const redDefend = cpuTackler(p) && !p.gk && owner && owner.team!==p.team && ballRank(p)<=1;
-  if(owner===p && isCpu(p)) spd=Math.max(spd,15.0);  // red drives at you with the ball
+  if(owner===p && isCpu(p)) spd = ((p.opD||0)>15 && ball.position.z*(p.team===0?1:-1)<10) ? 11.5 : Math.max(spd,15.0);  // brings it out calmly with nobody near; drives at you otherwise
   if(owner===p && isCtrl) spd=sprint?21.0:16.0;         // YOU run quicker with the ball at your feet
   if(redDefend) spd=Math.max(spd,16.6);                // red hustles hard to win it back
+  if(!isCtrl && !p.gk && p.slot.kind==='press' && owner && owner.team!==p.team){ const dO=p.pos.distanceTo(owner.pos);
+    if(dO<6) spd=Math.min(spd, Math.max(owner.speed+2.5, 7.5+dO*1.1)); }
   // a defender caught UPFIELD of the ball sprints back to recover goal-side (both teams) — so they get back to defend
   const _gd = p.team===0?1:-1;
   if(!p.gk && possTeam!==p.team && (p.pos.z-ball.position.z)*_gd > 2) spd=Math.max(spd,16.0);
@@ -3232,7 +3233,9 @@ function stepPlayer(p,dt){
   if(!isCtrl && !p.gk && throwTimer<=0 && owner!==p && passReceiver!==p && !(icpt[p.team]&&icpt[p.team].p===p) && recvMark[p.team]!==p
      && p.slot.kind!=='press' && !(pressTimer>0 && p.team===0)){
     const dl=p._dRaw, ug=p.slot.urg|0;
-    if(dl<0.25) desired.set(0,0,0);
+    // settled on his spot: he stays put until it has really moved away (no shuffling after every little drift of the shape)
+    if(dl<0.3) p.rest=true; else if(ug>=2 || dl>(p.slot.mark?0.8:ug>=1?1.0:1.8)) p.rest=false;
+    if(p.rest) desired.set(0,0,0);
     else if(ug>=2) spd=Math.min(spd*1.04, 2+dl*2.2);                    // a run / closing down: flat out until the last couple of metres
     else if(ug===1) spd=Math.min(spd, 2.5+dl*1.3);
     else spd=Math.min(spd, 2+dl*1.0); }                                  // keeping the shape: walk the short bits, jog the middle ones, run when it is far
@@ -3272,15 +3275,17 @@ function stepPlayer(p,dt){
   if((p.faceLock||0)>0) p.faceLock-=dt;                          // count down the facing lock
   if((p.turnT||0)>0) p.turnT-=dt; if((p.turnCd||0)>0) p.turnCd-=dt;
   if((p.stopT||0)>0) p.stopT-=dt; if((p.stopCd||0)>0) p.stopCd-=dt; if((p.spinCd||0)>0) p.spinCd-=dt; if((p.beatT||0)>0) p.beatT-=dt;
-  { let face=false;
+  { let face=false, fr=9;
+    if(!p.gk && !isCtrl && owner!==p && (p.faceLock||0)<=0 && p.speed<1.0 && p._dRaw<0.6 && !(p.slide>0)){ face=true; fr=3.5; }   // standing on his spot: he turns to watch the ball
     if(p.gk && !((p.dive||0)>0) && !((p.gkKickT||0)>0) && !p.gkThr && (p.faceLock||0)<=0 && !(p.gkReact && p._dRaw>4)) face=true;
-    if(!p.gk && passReceiver===p && owner!==p && (p.faceLock||0)<=0 && p._dRaw<2 && ball.position.distanceTo(p.pos)<26) face=true;
-    if(!p.gk && owner!==p && (throwTimer>0||kickoffHold>0) && p._dRaw<0.8 && (p.faceLock||0)<=0) face=true;
+    if(!p.gk && passReceiver===p && owner!==p && (p.faceLock||0)<=0 && p._dRaw<2 && ball.position.distanceTo(p.pos)<26){ face=true; fr=9; }
+    if(!p.gk && owner!==p && (throwTimer>0||kickoffHold>0) && p._dRaw<0.8 && (p.faceLock||0)<=0){ face=true; fr=9; }
+    if(p.gk) fr=9;
     if(face){ const tb=ball.position.clone().sub(p.pos); if(tb.x*tb.x+tb.z*tb.z>0.5 || p.gk){
       let th=Math.atan2(tb.x,tb.z);
       if(p.gk) th=gkFaceHeading(p);                                   // keeper: square to the field, watching the ball
       let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
-      p.heading+=dh*Math.min(1,dt*9); } } }
+      p.heading+=dh*Math.min(1,dt*fr); } } }
   p.pos.addScaledVector(p.vel,dt);
   { const lim = (throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA') ? HALF_W+TIN_BACK+1 : HALF_W+1;
     p.pos.x=THREE.MathUtils.clamp(p.pos.x,-lim,lim);
@@ -3415,7 +3420,9 @@ function playerBallInteraction(dt){
     if((p.dive||0)>0){ const down=p.gkClip && p.dive<p.gkFlyTo-0.25; reach=down?2.4:4.1; maxH=down?1.4:GOAL_H+0.3; }   // full stretch while flying
     else if(p.gkReact){ reach=3.4; maxH=GOAL_H; }        // set and reacting / sweeping: wide reach
     if(p.gkTip && (p.dive||0)>0){ if(Math.hypot(dx,dz)<reach+0.4 && ball.position.y<GOAL_H+1.6 && ball.position.y>2.2) gkTipOver(p); return; }
-    if(Math.hypot(dx,dz)<reach && ball.position.y<maxH) owner=p;
+    if(Math.hypot(dx,dz)<reach && ball.position.y<maxH){
+      if(p.gkParry && (p.dive||0)>0 && !pen && ballVel.length()>40 && Math.hypot(dx,dz)>2.0){ gkParry(p); return; }
+      owner=p; }
   });
   // DLS-style auto-switch: hand control to whichever blue outfielder has the ball, so your
   // team only kicks when YOU press a button (the AI never passes/shoots for you)
@@ -3545,7 +3552,7 @@ function awardSetPiece(team, x, z, label, taker, formTime){
   const isThrow=(label==='SAQUE DE BANDA');
   players.forEach(q=>{ q.tin=null; });
   if(isThrow){ x=(x>=0?1:-1)*(HALF_W+0.3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }   // ON the sideline, just outside
-  else { x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }
+  else if(label!=='SAQUE DE ESQUINA'){ x=THREE.MathUtils.clamp(x,-HALF_W+3,HALF_W-3); z=THREE.MathUtils.clamp(z,-HALF_L+4,HALF_L-4); }
   let rec=taker||null;
   if(!rec){ let rd=1e9; const spot=new THREE.Vector3(x,0,z);
     players.forEach(p=>{if(p.team!==team||p.gk||p.sentOff)return; if(spQuick && ((p.fall||0)>0||(p.getupT||0)>0)) return; const d=p.pos.distanceTo(spot); if(d<rd){rd=d;rec=p;}}); }
@@ -3572,15 +3579,8 @@ function awardSetPiece(team, x, z, label, taker, formTime){
     }
   } else { ball.position.set(x,BALL_R,z); ballVel.set(0,0,0); owner=null; }
   // nobody is teleported: every player RUNS to his spot during the form-up (and opponents back off 9 m)
-  players.forEach(p=>{ p.wallPt=null; p.spArr=undefined; p.fkPassOnly=false; p.pk2=null; p.tinSpot=null; p.spSpot=null;
+  players.forEach(p=>{ p.wallPt=null; p.spArr=undefined; p.fkPassOnly=false; p.pk2=null; p.tinSpot=null; p.spSpot=null; p.cornerPt=null; p.cornerMark=null; p.cornerZone=null;
     p.spJit=new THREE.Vector3((Math.random()-0.5)*4,0,(Math.random()-0.5)*4); }); pendingKicker=null; spQueued=null;   // no pass swing survives the whistle
-  if(label==='SAQUE DE BANDA' && rec){
-    const sx=Math.sign(rec.pos.x)||1, dirT=team===0?1:-1;
-    const spots=[ new THREE.Vector3(sx*(HALF_W-6), 0, THREE.MathUtils.clamp(rec.pos.z+dirT*12,-HALF_L+6,HALF_L-6)),     // down the line
-                  new THREE.Vector3(sx*(HALF_W-15),0, THREE.MathUtils.clamp(rec.pos.z-dirT*3,-HALF_L+6,HALF_L-6)) ];    // short, infield
-    const used=new Set();
-    spots.forEach(sp=>{ let bq=null,bd=1e9; players.forEach(q=>{ if(q.team!==team||q.gk||q.sentOff||q===rec||used.has(q)) return; const d=q.pos.distanceTo(sp); if(d<bd){bd=d;bq=q;} }); if(bq){ used.add(bq); bq.tinSpot=sp; } });
-  }
   spFKnear=false; spHoldT=0; spFade=0; spFadeDone=false; document.getElementById('spFade').style.opacity='0';
   if(label==='TIRO LIBRE' && rec){
     const def=1-team, gz=def===0?-HALF_L:HALF_L, toG=new THREE.Vector3(0,0,gz).sub(ball.position).setY(0), dG=toG.length();
@@ -3600,6 +3600,66 @@ let spQueued=null, spFKnear=false, spHoldT=0, spFade=0, spFadeSnapped=false, spF
 // throw-in: ball out over a sideline -> team that didn't touch it last
 function setupThrow(sideSign, zOut){
   spQuickNext=true; awardSetPiece(lastTouch===0?1:0, sideSign*(HALF_W-0.5), THREE.MathUtils.clamp(zOut,-HALF_L+5,HALF_L-5), 'SAQUE DE BANDA', null, 0.7);   // quick throw-in
+}
+/* CORNER KICK. The side taking it sends five into the box (near post, six-yard box, far post, penalty spot, near side),
+   two wait on the edge of the area for the second ball and two stay back; the defending side puts a man on the near post,
+   one in the six-yard box, a marker goal-side of every man in the box, one on the edge, and leaves the 9 up. */
+function cornerMarkSpot(q){ const a=q.cornerMark, gzD=(q.team===0?-1:1)*HALF_L, gx=-a.pos.x, gzz=gzD-a.pos.z, gl=Math.hypot(gx,gzz)||1;
+  return new THREE.Vector3(a.pos.x+gx/gl*1.8,0,a.pos.z+gzz/gl*1.8); }
+function setupCorner(team, side){
+  const es=team===0?1:-1, gz=es*HALF_L, d=-es;                     // es: the end being attacked; d: the way back up the pitch from that goal line
+  const cx=side*(HALF_W-1.0), cz=gz+d*1.0;
+  let tk=null, tb=1e9;                                             // the taker: the winger of that side (else the nearest midfielder)
+  for(const q of players){ if(q.team!==team||q.gk||q.sentOff) continue; const sh=SHP[q.code]; if(sh.dl==='D'||sh.dl==='S') continue;
+    const c=(sh.dl==='W'?0:sh.dl==='A'?12:22)+(q.fl===side?0:14)+Math.hypot(q.pos.x-cx,q.pos.z-cz)*0.05; if(c<tb){ tb=c; tk=q; } }
+  awardSetPiece(team, cx, cz, 'SAQUE DE ESQUINA', tk, 1.3);
+  const taker=setPieceTaker; if(!taker) return;
+  { const tx=-cx, tz=(gz+d*17)-cz; taker.heading=Math.atan2(tx,tz); taker.fall=0; taker.getupT=0;      // the ball on the corner arc, the taker just behind it, turned to the penalty spot
+    const fw=new THREE.Vector3(Math.sin(taker.heading),0,Math.cos(taker.heading));
+    taker.pos.set(cx-fw.x*0.6,0,cz-fw.z*0.6); ball.position.set(cx,BALL_R,cz); ballVel.set(0,0,0); }
+  const Z=(x,dz)=>new THREE.Vector3(x,0,gz+d*dz);
+  const spots=[ Z(side*5,6), Z(-side*1,9.5), Z(-side*7,7), Z(-side*2,17), Z(side*8,15),          // the box: near post · six-yard box · far post · penalty spot · near side
+                Z(side*3,32), Z(-side*15,27),                                                      // the edge of the area
+                new THREE.Vector3(-side*13,0,-es*8), new THREE.Vector3(side*15,0,-es*14), Z(0,42) ];   // staying back
+  const att=players.filter(q=>q.team===team&&!q.gk&&!q.sentOff&&q!==taker);
+  const pri=q=>{ const sh=SHP[q.code]; return sh.dl==='S'?0:(sh.dl==='D'&&sh.dx<20)?1:sh.dl==='W'?2:sh.dl==='A'?3:(sh.dl==='M'&&sh.dx>12)?4:sh.dl==='M'?5:6; };   // who goes up: the 9, the centre-backs, the far winger, the 10 / interiors; the full-backs stay
+  att.sort((a,b)=>pri(a)-pri(b));
+  att.forEach((q,i)=>{ const zone=spots[Math.min(i,spots.length-1)];
+    if(i<5){ q.cornerZone=zone; q.cornerPt=zone.clone().add(new THREE.Vector3(-zone.x*0.12,0,d*5.5)); }      // box men start a few steps off and attack their zone
+    else q.cornerPt=zone.clone(); });
+  const def=players.filter(q=>q.team!==team&&!q.gk&&!q.sentOff), used=new Set();
+  const take=(pt,pref)=>{ let bq=null,bd=1e9; for(const q of def){ if(used.has(q)) continue; const sh=SHP[q.code]; if(sh.dl==='S') continue;
+      const c=Math.hypot(q.pos.x-pt.x,q.pos.z-pt.z)+(pref(sh)?0:60); if(c<bd){ bd=c; bq=q; } } if(bq) used.add(bq); return bq; };
+  att.forEach(a=>{ if(!a.cornerZone) return; const m=take(a.cornerPt, sh=>sh.dl==='D'||(sh.dl==='M'&&sh.dx<15)); if(m) m.cornerMark=a; });
+  { const pt=Z(side*(GOAL_W/2-0.6),1.6), q=take(pt, sh=>sh.dl==='M'); if(q) q.cornerPt=pt; }       // on the near post
+  { const pt=Z(side*2,5.5), q=take(pt, sh=>sh.dl==='M'||sh.dl==='A'); if(q) q.cornerPt=pt; }       // in the six-yard box
+  { const pt=Z(0,27), q=take(pt, sh=>sh.dl==='W'||sh.dl==='A'); if(q) q.cornerPt=pt; }             // on the edge of the area
+  for(const q of def){ if(used.has(q)) continue; q.cornerPt = SHP[q.code].dl==='S' ? Z(-side*8,74) : Z(side*26,50); }   // the 9 stays up (whoever is left waits wide) for the counter
+  // a cut to the corner: everybody is already in place when the picture comes back
+  for(const pass of [0,1]) players.forEach(q=>{ if(q.sentOff||q===taker||(pass===0)===!!q.cornerMark) return;      // (the markers last: they stand off their man)
+    if(q.gk){ const g=(q.team===0?-1:1)*HALF_L, inw=(q.team===0?1:-1); q.pos.set(q.team!==team?side*2.5:0, 0, g+inw*(q.team!==team?1.6:14)); q.vel.set(0,0,0); q.dive=0; q.gkClip=null; return; }
+    const pt = q.cornerMark ? cornerMarkSpot(q) : q.cornerPt; if(!pt) return;
+    q.pos.copy(pt); q.vel.set(0,0,0); q.fall=0; q.getupT=0; q.slide=0; q.reactT=0; if(q.dSm) q.dSm.set(0,0,0);
+    const tb=ball.position.clone().sub(q.pos); q.heading=Math.atan2(tb.x,tb.z); q.spArr=true; });
+  spFade=0.18; spFadeSnapped=true; spFadeDone=true; document.getElementById('spFade').style.opacity='1';
+}
+// take it: whipped onto the man you point at (or the freest man in the box); a team-mate close by gets it short, along the grass
+function cornerTake(p, jd, power){
+  const t=p.team; let tgt=jd?aimedMate(p,jd):null; if(tgt && tgt.gk) tgt=null;
+  if(!tgt){ let bs=-1e9; for(const q of players){ if(q.team!==t||q===p||!q.cornerZone||q.sentOff) continue;
+      let md=99; for(const o of players){ if(o.team!==t&&!o.sentOff&&!o.gk) md=Math.min(md,o.pos.distanceTo(q.pos)); }
+      const sc=Math.min(md,6)+Math.random()*3; if(sc>bs){ bs=sc; tgt=q; } } }
+  if(!tgt) tgt=players.find(q=>q.team===t&&q!==p&&!q.gk&&!q.sentOff); if(!tgt) return;
+  if(!tgt.cornerZone && tgt.pos.distanceTo(p.pos)<36){ passBall(p,tgt,power); return; }
+  const aim=(tgt.cornerZone||tgt.pos).clone(), dir=aim.clone().sub(ball.position).setY(0);
+  queueKick(p, dir, ()=>{
+    const dd=Math.hypot(aim.x-ball.position.x,aim.z-ball.position.z), T=clampN(dd/31,1.0,1.75);
+    solveAir(aim.x, 4.4, aim.z, T, -6, (Math.random()<0.6?1:-1)*(14+Math.random()*12));          // whipped in with curl
+    p.kickCd=0.9; p.holdT=0; owner=null; lastTouch=t; lastKicker=p; passReceiver=tgt; passSeekT=T+0.5;
+    throwTimer=0; setPieceForm=0; setPieceTaker=null;
+    if(t===0 && !autoBlue) ctrl=players.indexOf(tgt);
+    showPower(p, power==null?0.85:power);
+  }, 'shot');
 }
 // goal kick: ball out over an end line (no goal) -> that end's keeper restarts
 function setupGoalKick(team){
@@ -3663,8 +3723,9 @@ function stepBall(dt){
   // out over an end line (no goal) -> goal kick
   if(Math.abs(ball.position.z)>HALF_L && deadTimer<=0 && throwTimer<=0 && kickoffHold<=0
      && !(Math.abs(ball.position.x)<GOAL_W/2 && ball.position.y<GOAL_H)){
-    const tm=ball.position.z>0 ? 1 : 0;
-    scheduleRestart(1.3, 'SAQUE DE META', ()=>setupGoalKick(tm));
+    const tm=ball.position.z>0 ? 1 : 0, side=ball.position.x>=0?1:-1;           // tm: the side defending that goal
+    if(lastTouch===tm && GK['Soccer_Header']) scheduleRestart(1.3, 'SAQUE DE ESQUINA', ()=>setupCorner(1-tm, side));
+    else scheduleRestart(1.3, 'SAQUE DE META', ()=>setupGoalKick(tm));
   }
   bShadow.position.set(ball.position.x,0.03,ball.position.z);
   const sc=THREE.MathUtils.clamp(1.3-ball.position.y*0.12,0.5,1.3);
@@ -3873,6 +3934,7 @@ function simFrame(rdt, lastSub){
     }else if(deadTimer>0){
       // whistle blown: the ball keeps rolling while players settle, then the restart is set up
       deadTimer-=dt; owner=null;
+      if(setPieceLabel==='SAQUE DE ESQUINA' && deadTimer>0 && deadTimer<0.3) document.getElementById('spFade').style.opacity='1';
       if(deadTimer<=0){
         const fn=deadAction; deadAction=null; if(fn)fn();   // set up the restart (brings the ball back in)
         players.forEach(p=>stepPlayer(p,dt));
@@ -3901,7 +3963,7 @@ function simFrame(rdt, lastSub){
             players.forEach(q=>{ if(q.spSpot && q.spArr===false && !q.sentOff && q!==setPieceTaker && (q.fall||0)<=0){ q.pos.copy(q.spSpot); q.vel.set(0,0,0); q.spArr=true;
               const tb=ball.position.clone().sub(q.pos); if(tb.lengthSq()>0.5) q.heading=Math.atan2(tb.x,tb.z); } });
             document.getElementById('spFade').style.opacity='0'; }
-          if(spFade<=0) setPieceForm=0.25;
+          if(spFade<=0){ setPieceForm=Math.max(setPieceForm,0.25); document.getElementById('spFade').style.opacity='0'; }
         }else if(spQuick && !spFadeDone && setPieceForm>0 && setPieceForm<0.3 && players.some(q=>!q.sentOff && q!==setPieceTaker && !q.gk && ((q.spSpot && (q.fall||0)<=0 && (q.getupT||0)<=0 && q.pos.distanceTo(q.spSpot)>16) || (((q.fall||0)>0||(q.getupT||0)>0) && q.pos.distanceTo(ball.position)<8)))){
           spFadeDone=true; spFade=0.5; spFadeSnapped=false; players.forEach(q=>{ if(q.spSpot && q.pos.distanceTo(q.spSpot)>3) q.spArr=false; }); document.getElementById('spFade').style.opacity='1';   // quick blackout, everyone set
         }else if(!spQuick && setPieceForm>0 && setPieceForm<0.3 && !spFadeDone && players.some(q=>q.spArr===false && !q.sentOff && (q.fall||0)<=0 && (q.getupT||0)<=0)){
@@ -3919,8 +3981,8 @@ function simFrame(rdt, lastSub){
           if(o && o===setPieceTaker){
             if(setPieceGK){ gkPass(o); }             // keeper plays out a goal kick (a pass to a mate)
             else if(isCpu(o)){                       // CPU: if it hasn't passed yet, pass to a teammate now
-              const tgt=passTarget(o) || kickoffPassTarget(o);
-              if(tgt) passBall(o,tgt);
+              if(setPieceLabel==='SAQUE DE ESQUINA') cornerTake(o,null,0.85);
+              else { const tgt=passTarget(o) || kickoffPassTarget(o); if(tgt) passBall(o,tgt); }
             }
             // YOUR outfield set-pieces never auto-pass — the ball stays with you; take it with PASE when ready
           }
