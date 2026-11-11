@@ -752,6 +752,7 @@ function spawnTeam(t){
     const p={mesh,team:t,gk,idx:i,roleIdx:i,pbar:makePowerBar(),pbarT:0,
       pos:new THREE.Vector3(),vel:new THREE.Vector3(),
       base:new THREE.Vector3(),heading:0,slide:0,slideCd:0,kickCd:0,speed:0,
+      slot:{x:0,z:0,u:0,x0:0,u0:0,urg:0,kind:'',mark:null},
       curAnim:'idle',prevKickCd:0,kickTrig:0,slideSide:1};
     setupPlayerAnim(p);
     players.push(p);
@@ -764,7 +765,12 @@ function assignRoles(){
     // each player keeps his position in the 4-4-2 (a red card simply leaves a gap the shape covers)
     players.forEach(p=>{ if(p.team===t) p.roleIdx=p.idx; });
     players.forEach(p=>{ if(p.team===t&&p.gk) p.roleIdx=0; });
+    // a man sent off from the back four: a midfielder drops in to keep four at the back
+    players.forEach(d=>{ if(d.team!==t||!d.sentOff||d.gk||ROLE[LINEUP[t][d.roleIdx]].line!=='D') return;
+      for(const c of ['CDM','RDM','LDM','RCM','LCM','CAM','RW','LW']){ const r=players.find(q=>q.team===t&&!q.sentOff&&!q.gk&&LINEUP[t][q.roleIdx]===c);
+        if(r){ const k=r.roleIdx; r.roleIdx=d.roleIdx; d.roleIdx=k; break; } } });
   });
+  players.forEach(p=>{ p.code=LINEUP[p.team][p.roleIdx]; p.fl=Math.sign((p.team===0?1:-1)*(ROLE[p.code]||ROLE.CDM).x); });
 }
 
 /* formations — one player per position, spread out (blue attacks +Z; red attacks -Z):
@@ -811,7 +817,7 @@ function resetPositions(kickTeam){
     p.base.set(f[0],0,f[1]);
     // the team NOT kicking off lines up a bit deeper, giving the kicker room at the centre
     if(!p.gk && p.team!==kickTeam){ p.base.z += (p.team===0?-6:6); }
-    p.pos.copy(p.base); p.vel.set(0,0,0);
+    p.pos.copy(p.base); p.vel.set(0,0,0); p.run=null; p.supK=null; p.slot.x=p.pos.x; p.slot.z=p.pos.z;
     // the kicking team's striker stands just behind the ball on the centre spot to take the kickoff
     if(!p.gk && p.roleIdx===STRIKER && p.team===kickTeam){
       const cz=p.team===0?-1.0:1.0; p.pos.set(0,0,cz); p.base.set(0,0,cz);
@@ -1024,7 +1030,7 @@ function phyStep(s,h){
 }
 function phyState(){ return {x:ball.position.x,y:ball.position.y,z:ball.position.z,vx:ballVel.x,vy:ballVel.y,vz:ballVel.z,wx:ballSpin.x,wy:ballSpin.y,wz:ballSpin.z}; }
 // spin for a kick along horizontal direction d: top (+) / back (-) spin and side spin (+ curls to the kicker's LEFT)
-function kickSpin(d, top, side){ const l=Math.hypot(d.x,d.z)||1; ballSpin.set(d.z/l*top, side||0, -d.x/l*top); spinSet=true; kickT=0.07; }
+function kickSpin(d, top, side){ const l=Math.hypot(d.x,d.z)||1; ballSpin.set(d.z/l*top, side||0, -d.x/l*top); spinSet=true; kickT=0.1; }
 // posts and crossbar: the ball rings off the woodwork
 const GP_R=0.14+BALL_R; let postCd=0;
 function goalFrameHit(s){
@@ -1039,6 +1045,7 @@ function goalFrameHit(s){
   return hit;
 }
 // ---- kick solver: the launch that makes THIS physics put the ball where it is meant to go ----
+function rivalReach(sp){ return POSSESS+0.15-THREE.MathUtils.clamp((sp-22)/22,0,1)*0.9; }
 function rollDecel(v){ return PHY.r0+(PHY.r1+PHY.kl)*v+PHY.kq*v*v; }
 // a ball rolling out at v0: when it has covered d, how long it took and how fast it is still going (null: it stops short)
 function rollTo(v0,d){ let v=v0,x=0,t=0; const h=0.01; while(x<d){ if(v<=0.05||t>14) return null; x+=v*h; v=Math.max(0,v-rollDecel(v)*h); t+=h; } return {t,v}; }
@@ -1055,15 +1062,16 @@ function solveAirV(p0,tx,ty,tz,T,top,side){
     const ex=tx-st.x, ey=ty-st.y, ez=tz-st.z; vx+=ex/T; vy+=ey/T; vz+=ez/T; if(ex*ex+ey*ey+ez*ez<0.004) break; }
   return {v:new THREE.Vector3(vx,vy,vz), w};
 }
-function solveAir(tx,ty,tz,T,top,side){ const r=solveAirV(ball.position,tx,ty,tz,T,top,side); ballVel.copy(r.v); ballSpin.copy(r.w); spinSet=true; kickT=0.07; }
+function solveAir(tx,ty,tz,T,top,side){ const r=solveAirV(ball.position,tx,ty,tz,T,top,side); ballVel.copy(r.v); ballSpin.copy(r.w); spinSet=true; kickT=0.1; }
 const _gv0=new Map();
 function groundV0c(d,va){ const k=Math.round(d*2)*1000+Math.round(va*2); let v=_gv0.get(k); if(v===undefined){ v=groundV0(Math.round(d*2)/2, Math.round(va*2)/2); if(_gv0.size>4000) _gv0.clear(); _gv0.set(k,v); } return v; }
 // the ball's path for a launch (same physics as the real ball), sampled every dt
 function kickPath(from,v,w,tMax,dt){ const st={x:from.x,y:from.y,z:from.z,vx:v.x,vy:v.y,vz:v.z,wx:w.x,wy:w.y,wz:w.z}, out=[]; let t=0; const sub=3, h=dt/sub;
-  while(t<tMax){ for(let i=0;i<sub;i++) phyStep(st,h); t+=dt; out.push({x:st.x,y:st.y,z:st.z,t}); if(Math.hypot(st.vx,st.vz)<0.5 && st.y<=BALL_R+1e-3) break; }
+  while(t<tMax){ for(let i=0;i<sub;i++) phyStep(st,h); t+=dt; out.push({x:st.x,y:st.y,z:st.z,t,sp:Math.hypot(st.vx,st.vz)}); if(Math.hypot(st.vx,st.vz)<0.5 && st.y<=BALL_R+1e-3) break; }
   return out; }
 // 0..1: how likely a rival gets to this ball before our man takes it at endT (reaction + run vs. the ball's arrival)
-function pathRisk(team, path, endT){
+function pathRisk(team, path, endT, lead){
+  lead=lead||0;
   // a rival owns the ball the moment it comes within POSSESS of him (feet / body: below ~2 m), keepers claim it in
   // their area up to the bar, and outfielders head / chest a ball passing within ~2.4 at head height
   let risk=0;
@@ -1071,27 +1079,28 @@ function pathRisk(team, path, endT){
     const box=o.gk && inOwnBox(o), vO=o.gk?12.5:14.5;
     for(const sp of path){ if(sp.t>endT) break;
       let reach;
-      if(sp.k0) reach=1.0;                                                // right at the boot: only a man ON the ball blocks it
+      if(sp.k0 || sp.t<0.1) reach=1.0;                                    // right at the boot: only a man ON the ball blocks it
       else if(box && sp.y<GOAL_H+0.5) reach=2.6;
-      else if(sp.y<2.0) reach=Math.sqrt(Math.max(0,POSSESS*POSSESS-sp.y*sp.y))+0.15;
+      else if(sp.y<2.0) reach=Math.max(1.25, Math.sqrt(Math.max(0,POSSESS*POSSESS-sp.y*sp.y))+0.15-THREE.MathUtils.clamp(((sp.sp||0)-22)/22,0,1)*0.9);   // a fast ball has to pass closer to him
       else if(sp.y<5.5 && !o.gk) reach=1.6; else continue;
-      const d=Math.hypot(sp.x-o.pos.x, sp.z-o.pos.z), tO = d<=reach ? 0 : 0.2+(d-reach)/vO, m=sp.t-tO;
+      const d=Math.hypot(sp.x-o.pos.x-o.vel.x*lead, sp.z-o.pos.z-o.vel.z*lead), tO = d<=reach ? 0 : 0.2+(d-reach)/vO, m=sp.t-tO;
       if(m>-0.4){ const r=1/(1+Math.exp(-m/0.1)); if(r>risk) risk=r; } } }
   return risk;
 }
 // plan a ball to team-mate q: 'ground' (rolled along the grass), 'throw' (keeper's hands) or 'long' (lofted onto him)
 const _zv=new THREE.Vector3();
-function planBall(p, q, mode, from){
-  const lead=(q.vel||_zv).clone().setY(0), d0=Math.hypot(q.pos.x-from.x,q.pos.z-from.z);
+function planBall(p, q, mode, from, aimOv, swingT, firm){
+  const lead=(q.vel||_zv).clone().setY(0), d0 = aimOv ? Math.hypot(aimOv.x-from.x,aimOv.z-from.z) : Math.hypot(q.pos.x-from.x,q.pos.z-from.z);
   let T, aim, v, w, endT;
   if(mode==='ground'){
-    const va=THREE.MathUtils.clamp(11+d0*0.22,12,24), r0=rollTo(groundV0c(d0,va),d0); T=r0?r0.t:1.4;
-    aim=q.pos.clone().addScaledVector(lead,Math.min(T,1.2)*0.6).setY(0);
+    const va = aimOv ? 8 : THREE.MathUtils.clamp(11+d0*0.22,12,24)*(firm||1), r0=rollTo(groundV0c(d0,va),d0); T=r0?r0.t:1.4;   // into space: it dies as he runs onto it
+    aim = aimOv ? aimOv.clone().setY(0) : q.pos.clone().addScaledVector(lead,Math.min(T,1.2)*0.6).setY(0);
     const dd=Math.max(2,Math.hypot(aim.x-from.x,aim.z-from.z)), v0=Math.min(118,groundV0c(dd,va)), ux=(aim.x-from.x)/dd, uz=(aim.z-from.z)/dd;
     v=new THREE.Vector3(ux*v0,0.15,uz*v0); w=new THREE.Vector3(uz*v0/BALL_R,0,-ux*v0/BALL_R); const r1=rollTo(v0,dd); endT=r1?r1.t:T;
   }else if(mode==='chip'){
-    T=THREE.MathUtils.clamp(d0/28,0.55,0.95); aim=q.pos.clone().addScaledVector(lead,T*0.6).setY(0);
-    const r=solveAirV(from, aim.x, 0.8, aim.z, T, -8, 0); v=r.v; w=r.w; endT=T;
+    T = aimOv ? THREE.MathUtils.clamp(d0/26,0.6,1.35) : THREE.MathUtils.clamp(d0/28,0.55,0.95);
+    aim = aimOv ? aimOv.clone().setY(0) : q.pos.clone().addScaledVector(lead,T*0.6).setY(0);
+    const r=solveAirV(from, aim.x, 0.8, aim.z, T, aimOv?-12:-8, 0); v=r.v; w=r.w; endT=T;
   }else{
     const thr=(mode==='throw');
     T = thr ? THREE.MathUtils.clamp(d0/24,0.45,1.35) : THREE.MathUtils.clamp(d0/32,0.95,2.1);
@@ -1100,11 +1109,14 @@ function planBall(p, q, mode, from){
     const r=solveAirV(from, aim.x, 1.0, aim.z, T, thr?-6:-10, 0); v=r.v; w=r.w; endT=T;
   }
   const path=kickPath(from, v, w, endT+0.35, 0.05); path.unshift({x:from.x,y:Math.min(from.y,1.0),z:from.z,t:0,k0:true});
-  const tR=0.12+Math.max(0,Math.hypot(aim.x-q.pos.x,aim.z-q.pos.z)-1.2)/13.5;   // can he get there in time?
-  let risk=pathRisk(p.team, path, Math.max(endT,tR)+0.1);
-  const tA=Math.max(endT,tR);                                                    // the moment he takes it
+  let tk=null;                                                                    // where our man meets the ball
+  if(!q.gk){ for(let i=1;i<path.length;i++){ const sp=path[i]; if(sp.y>1.9 || sp.t<0.25) continue;
+      if(0.15+Math.max(0,Math.hypot(sp.x-q.pos.x,sp.z-q.pos.z)-1.5)/12<=sp.t){ tk=sp; break; } } }
+  const tR=0.12+Math.max(0,Math.hypot(aim.x-q.pos.x,aim.z-q.pos.z)-1.2)/13.5;   // (failing that: when he gets to where it is going)
+  const tA = tk ? tk.t : Math.max(endT,tR), ax=tk?tk.x:aim.x, az=tk?tk.z:aim.z;  // the moment (and the spot) he takes it
+  let risk=pathRisk(p.team, path, tA+(tk?0.03:0.1), swingT);
   for(const o of players){ if(o.team===p.team||o.sentOff||(o.fall||0)>0) continue;
-    const dO=Math.max(0, Math.hypot(o.pos.x-aim.x,o.pos.z-aim.z) - (o.gk?12.5:14.5)*Math.max(0,tA-0.24));
+    const dO=Math.max(0, Math.hypot(o.pos.x-ax,o.pos.z-az) - (o.gk?12.5:14.5)*Math.max(0,tA-0.24));
     const cont=dO<3.2 ? (mode==='ground'?0.45:0.7)*(1-dO/3.2) : 0;               // a lofted ball is much harder to control under a challenge
     if(cont>risk) risk=cont; }
   return {q, mode, aim, T, endT, v, w, risk, d:d0};
@@ -1131,7 +1143,7 @@ function gkPlan(p, hands, only){
 function gkLaunch(p, plan, volley){
   const q=plan.q, pl=planBall(p, q, volley ? 'long' : plan.mode, ball.position.clone());   // re-aimed from where the ball is now
   const dv=new THREE.Vector3(pl.aim.x-ball.position.x,0,pl.aim.z-ball.position.z); if(dv.lengthSq()>0.01){ p.heading=Math.atan2(dv.x,dv.z); p.faceLock=0.45; }
-  ballVel.copy(pl.v); ballSpin.copy(pl.w); spinSet=true; kickT=0.07;
+  ballVel.copy(pl.v); ballSpin.copy(pl.w); spinSet=true; kickT=0.1;
   p.kickCd=0.9; p.holdT=0; owner=null; lastTouch=p.team; lastKicker=p; p.prevKickCd=0.9;
   passReceiver=q; passSeekT=THREE.MathUtils.clamp(pl.endT+0.5,0.8,2.6);
   if(p.team===0) ctrl=players.indexOf(q);
@@ -1250,6 +1262,9 @@ function soResolve(scored){
 }
 let menuActive=true, menuT=0;   // main-menu state: a slow cinematic camera pans the pitch behind the menu
 let ctrl=1;                       // index into blue team (players[ctrl]) controlled
+let autoBlue=false, blueSteal=false;   // (tests / demo) the blue side plays by itself too; blueSteal: its defenders also tackle like the rival's
+function isCpu(p){ return p.team===1 || autoBlue; }
+function cpuTackler(p){ return p.team===1 || (autoBlue && blueSteal); }
 let owner=null;                   // player object holding ball, or null
 let teamHasBall=false;            // true if blue owns
 let pressTimer=0, goalFlash=0, kickoffTeam=1, kickoffHold=0;
@@ -1260,6 +1275,7 @@ let awaitKickoffPass=false, kickoffTaker=null;   // kickoff must start with a pa
 let koGrace=0, koCalm=0;   // koCalm: a few seconds after the kick-off the game starts gently, nobody charging about                    // just after a kickoff: the other team keeps its shape instead of swarming the ball
 let passReceiver=null, passSeekT=0;   // the mate a pass is heading to moves to meet it, so passes connect
 let possTeam=-1, possConfirmTeam=-1, possConfirmT=0;   // which team is "in possession" for shape (with hysteresis)
+const ctlT=[0,0]; let looseT=0;      // how long each side has had the ball under control (a pass on its way to a team-mate still counts)
 function scheduleRestart(delay, label, fn){
   if(so && period===5) return;                 // shoot-out: no restarts (a miss is just a miss)
   if(deadTimer>0 || kickoffHold>0) return;   // a stoppage is already running
@@ -1442,45 +1458,6 @@ function ballRank(p){
   players.forEach(q=>{ if(q.team===p.team&&!q.gk&&q!==p&&!q.sentOff && q.pos.distanceTo(ball.position)<d) r++; });
   return r;
 }
-// nearest opponent (not the ball carrier) for a defender to pick up / mark
-function pickMark(p){
-  const R=defRoleCache[p.team]; if(R && R.mark && R.mark.has(p)) return R.mark.get(p);   // his own man
-  let best=null,bd=1e9;
-  players.forEach(q=>{ if(q.team===p.team||q.gk||q.sentOff||q===owner) return;
-    const d=q.pos.distanceTo(p.pos); if(d<bd){bd=d;best=q;} });
-  return best;
-}
-// position-based defensive roles, recomputed every frame so they ROTATE naturally (not fixed to a shirt):
-// whoever is nearest the ball presses, whoever is deepest covers the box, whoever is highest waits for the counter
-let defRoleCache=[null,null];
-function computeDefRoles(){
-  for(const team of [0,1]){
-    const outs=players.filter(q=>q.team===team&&!q.gk&&!q.sentOff);
-    if(!outs.length){ defRoleCache[team]={presser:null,cover:null,outlet:null}; continue; }
-    const gz=team===0?-HALF_L:HALF_L;
-    const goalDist=q=>Math.abs(q.pos.z-gz)+Math.abs(q.pos.x)*0.3;
-    const ballOut=(ball.position.z-gz)*(team===0?1:-1);               // how far the ball is from OUR goal
-    const pf=q=>{ const r=roleOf(q); let f=r.press;
-      if(r.line==='D' && !r.wide && ballOut>HALF_L*1.05) f*=2.4;       // centre-backs don't chase into the other half
-      if(r.line==='F' && ballOut<HALF_L*0.55) f*=1.9;                  // forwards don't chase back into our third
-      if(r.line==='F' && ballOut>HALF_L*1.35) f*=0.75;                 // ...but they press high up the pitch
-      return f; };
-    let presser=outs[0]; for(const q of outs) if(q.pos.distanceTo(ball.position)*pf(q)<presser.pos.distanceTo(ball.position)*pf(presser)) presser=q;
-    const rest=outs.filter(q=>q!==presser);
-    let cover=rest[0]||presser; for(const q of rest) if(goalDist(q)<goalDist(cover)) cover=q;
-    const rest2=rest.filter(q=>q!==cover);
-    let outlet=rest2[0]||null; for(const q of rest2) if(!outlet||goalDist(q)>goalDist(outlet)) outlet=q;
-    // man-marking assignment: rivals sorted by danger (near our goal / near the ball), each takes the nearest free defender
-    const mark=new Map(), taken=new Set([presser,cover,outlet]);
-    const foes=players.filter(q=>q.team!==team&&!q.gk&&!q.sentOff&&q!==owner)
-      .map(q=>({q, dg:Math.abs(q.pos.z-gz)*1.0+Math.abs(q.pos.x)*0.25+q.pos.distanceTo(ball.position)*0.35}))
-      .sort((a,b)=>a.dg-b.dg);
-    for(const f of foes){ let bd=1e9, bq=null;
-      for(const q of outs){ if(taken.has(q)) continue; const d=q.pos.distanceTo(f.q.pos); if(d<bd){ bd=d; bq=q; } }
-      if(bq && bd<34){ mark.set(bq,f.q); taken.add(bq); } }
-    defRoleCache[team]={presser,cover,outlet,mark};
-  }
-}
 function aimDir(p){
   // joystick direction (side-camera mapped) if pushed, else toward opponent goal
   if(moveDir.lengthSq()>0.05) return joyVec().normalize();
@@ -1489,41 +1466,22 @@ function aimDir(p){
   if(d.lengthSq()<0.01) d.set(0,0,p.team===0?1:-1);   // never zero -> never a straight-up ball
   return d.normalize();
 }
-// pass to the teammate the joystick is pointing at (within a cone), closest one preferred.
-// The goalkeeper IS allowed as a target, so you can aim a back-pass to your keeper.
-function directionalPassTarget(pl, jd){
+// the team-mate the joystick points at (within a cone) — used for the lofted ball; the keeper is allowed as a target
+function aimedMate(pl, jd){
   let best=null,bb=-1e9;
   players.forEach(q=>{ if(q.team!==pl.team||q===pl||q.sentOff) return;
-    if(isOffside(q,pl.team)) return;                         // don't aim a pass into an offside mate
+    if(isOffside(q,pl.team)) return;                         // don't aim a ball into an offside mate
     const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1.5) return; to.normalize();
     const align=to.dot(jd); if(align<0.6) return;           // only mates close to where you're pointing
     let md=99; players.forEach(o=>{ if(o.team!==pl.team&&!o.sentOff) md=Math.min(md,o.pos.distanceTo(q.pos)); });
-    let lane=0; players.forEach(o=>{ if(o.team===pl.team||o.sentOff) return; const rel=o.pos.clone().sub(pl.pos).setY(0), al=rel.dot(to);
-      if(al>1.5 && al<dist-1){ const pp=rel.addScaledVector(to,-al).length(); if(pp<2.0) lane=Math.max(lane,2.0-pp); } });
-    const sc=align*14 - dist*0.035 + Math.min(md,8)*0.35 - lane*2.5 - (q.gk?3:0);   // where you aim first, then the freer, cleaner option
+    const sc=align*14 - dist*0.035 + Math.min(md,8)*0.35 - (q.gk?3:0);
     if(sc>bb){bb=sc;best=q;}
   });
   return best;
 }
-// best teammate to pass to: ahead toward goal, open, biased by joystick aim
-function passTarget(pl){
-  const dir=pl.team===0?1:-1; let best=null,bb=-1e9;
-  const aim=aimDir(pl);
-  players.forEach(q=>{
-    if(q.team!==pl.team||q.gk||q===pl||q.sentOff) return;
-    if(isOffside(q,pl.team)) return;                         // never pick an offside mate -> no false offside calls
-    const to=q.pos.clone().sub(pl.pos).setY(0); const dist=to.length(); if(dist<1)return; to.normalize();
-    let md=1e9; players.forEach(d=>{if(d.team!==pl.team&&!d.gk)md=Math.min(md,d.pos.distanceTo(q.pos));});
-    const ahead=(q.pos.z-pl.pos.z)*dir;
-    // strongly prefer an OPEN teammate (fewer intercepted passes) and penalise a tightly-marked one
-    const open=(md>6?5:md>4?3:md>2.5?1:0) - (md<2?4:0);
-    const fr=ball.position.clone(); fr.y=BALL_R; let rk=dist>2.5 ? planBall(pl,q,'ground',fr).risk : 0;
-    if(rk>0.4 && dist>10) rk=Math.min(rk, planBall(pl,q,'chip',fr).risk+0.08);   // (a chip over the man counts)
-    const sc=ahead*1.1 + to.dot(aim)*5 + open - dist*0.1 - rk*8;                  // assisted pass: the man the ball can actually reach
-    if(sc>bb){bb=sc;best=q;}
-  });
-  return best;
-}
+// who a pass goes to: where you point (directional) / the best ball on (no aim) — see humanPass
+function directionalPassTarget(pl, jd){ const o=humanPass(pl,jd,1); return o?o.q:null; }
+function passTarget(pl){ const o=humanPass(pl,null,1); return o?o.q:null; }
 function doAction(which, power){
   if(!running||paused) return;
   power = (power==null)?1:THREE.MathUtils.clamp(power,0.25,1);
@@ -1564,18 +1522,14 @@ function doAction(which, power){
     if(pl.kickCd>0) return;
     if((pl.spinT||0)>0.22) return; pl.spinT=0;     // mid-roulette: you can strike it as he comes out of it
     if(which==='B'){            // PASE — the joystick aims the pass (not random)
-      if(moveDir.lengthSq()>0.05){
-        const jd=joyVec().normalize();   // where you're pointing on screen
-        const tgt=directionalPassTarget(pl,jd);
-        if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
-        // nobody in that direction -> drive a firm ground ball exactly where you aim
-        pl.heading=Math.atan2(jd.x,jd.z); pl.faceLock=0.45;   // face the aim so the kick animation points the right way
-        queueKick(pl, jd, ()=>{ ballAtRightFoot(pl); kickGround(jd, groundV0(26+46*power,1)); pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); return;
-      }
-      const tgt=passTarget(pl);              // no aim -> pick the best open teammate forward
-      if(tgt){ passBall(pl,tgt,power); ctrl=players.indexOf(tgt); return; }
-      { const ad=aimDir(pl);
-        queueKick(pl, ad, ()=>{ ballAtRightFoot(pl); kickGround(ad, groundV0(26+44*power,1)); pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); } return;
+      const jd = moveDir.lengthSq()>0.05 ? joyVec().normalize() : null;   // where you're pointing on screen
+      const o=humanPass(pl, jd, power);
+      if(o){ const dq=(o.aim||o.q.pos).clone().sub(pl.pos).setY(0);
+        queueKick(pl, dq, ()=>launchPlan(pl,o), o.kind==='long'?'shot':undefined, o.quick); ctrl=players.indexOf(o.q); return; }   // closed down: a quicker release
+      // nobody on in that direction -> drive a firm ground ball exactly where you aim
+      const ad = jd || aimDir(pl);
+      if(jd){ pl.heading=Math.atan2(jd.x,jd.z); pl.faceLock=0.45; }   // face the aim so the kick animation points the right way
+      queueKick(pl, ad, ()=>{ ballAtRightFoot(pl); kickGround(ad, groundV0(26+46*power,1)); pl.kickCd=0.3; pl.kickKind='pass'; owner=null; showPower(pl,power); }); return;
     }
     { const gz0=pl.team===0?HALF_L:-HALF_L; let pre;
       if(which==='A') pre = moveDir.lengthSq()>0.05 ? joyVec().normalize() : new THREE.Vector3(0,0,gz0).sub(ball.position).setY(0).normalize();
@@ -1607,7 +1561,7 @@ function doAction(which, power){
     }else{                      // ELEVADO (lob/cross) — toward where the joystick points
       const dir=aimDir(pl);
       pl.heading=Math.atan2(dir.x,dir.z); pl.faceLock=0.45; ballAtRightFoot(pl);   // face + strike from the right foot
-      const mate=directionalPassTarget(pl,dir);
+      const mate=aimedMate(pl,dir);
       if(mate){                                   // a cross dropped onto his HEAD, so he can head it or try a chilena
         const tgt=mate.pos.clone().addScaledVector(mate.vel||new THREE.Vector3(),0.35), to=tgt.sub(ball.position).setY(0); const d=to.length();
         const T=THREE.MathUtils.clamp(d/(30+17*power),0.6,1.35);   // firmer, quicker cross
@@ -1626,43 +1580,6 @@ function doAction(which, power){
     }
     else if(which==='A'){ if(p.slideCd<=0){p.slide=0.72; p.slideMax=0.72; p.slideCd=1.5;} } // slide tackle (a longer slide)
   }
-}
-
-/* CPU decision: near the opponent box, shoot or pass instead of dribbling in */
-function cpuTryKick(p){
-  if(p.kickCd>0) return false;
-  const goal=new THREE.Vector3(0,0,-HALF_L);          // blue goal (cpu attacks -Z)
-  const dg=ball.position.distanceTo(goal);
-  if(ball.position.z > -HALF_L+64) return false;       // start looking for goal in the final third
-  const onAngle=Math.abs(ball.position.x)<GOAL_W+5;
-  const Rk=roleOf(p);
-  // clean through / in front of goal: no defender between him and the goal close by -> he SHOOTS, he doesn't lay it back
-  let blocker=false; { const tg=goal.clone().sub(ball.position).setY(0).normalize();
-    players.forEach(o=>{ if(o.team===p.team||o.gk||o.sentOff) return; const rel=o.pos.clone().sub(ball.position).setY(0), al=rel.dot(tg);
-      if(al>0 && al<9 && rel.addScaledVector(tg,-al).length()<3) blocker=true; }); }
-  const clear = !blocker && dg<34 && Math.abs(ball.position.x)<GOAL_W+8;
-  // a winger who has got down the line crosses it in for the striker
-  const wideW = Rk.cross && Math.abs(ball.position.x)>BOX_HALF_W-10, toLine=Math.abs(ball.position.z+HALF_L);
-  if(wideW && toLine<46 && !clear && Math.random()<((p.holdT||0)>0.2?0.15:0.04) && cpuCross(p)) return true;
-  if(!clear && !(wideW && toLine>=30) && (p.holdT||0)>0.3 && Math.random()<(redCombo>=2?0.7:0.5) && cpuThroughBall(p)) return true;   // a runner in behind (a winger keeps going down the line)
-  const onAngleL=Math.abs(ball.position.x)<GOAL_W+12;
-  if(clear || (dg<Rk.shoot+6 && ((onAngle && (dg<30 || (dg<38 && Math.random()<0.5))) || (onAngleL && (p.holdT||0)>0.35 && Math.random()<(redCombo>=2?0.09:0.05))))){   // in range / clean through: SHOOT (by role), including a strike from distance
-    // aim for the corner AWAY from the keeper so it's a real test, not straight at them
-    const gk=players.find(q=>q.team===0&&q.gk);
-    const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
-    const tx = side*(GOAL_W*0.5-1.0) + (Math.random()-0.5)*0.9;   // picks the corner more accurately
-    const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0);
-    if(dir.lengthSq()<1) dir.set(0,0,-1);        // on the goal line the aim degenerates to zero -> never launch straight up
-    dir.normalize();
-    const pw=0.85+Math.random()*0.15;
-    queueKick(p, dir, ()=>{ p.heading=Math.atan2(dir.x,dir.z); p.faceLock=0.6; ballAtRightFoot(p);
-      ballVel.copy(dir).multiplyScalar(50+20*pw); ballVel.y=2.8+2.2*pw; p.kickCd=.6; owner=null; showPower(p,pw); }, 'shot');
-    return true;
-  }
-  // near the box: lay it off to the best-placed open mate, or keep driving at goal yourself
-  const best=bestPassTarget(p);
-  if(best && !clear && (p.holdT||0)>0.8 && Math.random()<0.4){ passBall(p,best); return true; }   // mix passing with carrying forward (not instantly)
-  return false;                                                       // else keep driving toward goal
 }
 
 /* Goalkeeper distributes: find an OPEN teammate FORWARD and wide, never across his own goal.
@@ -1934,7 +1851,8 @@ function stepPenalty(dt){
       const sp=10;                                                         // aim speed across the goal
       pen.aimX=THREE.MathUtils.clamp(pen.aimX - pen.dir*(SIDE_FLIP?-1:1)*moveDir.x*sp*dt, -GOAL_W/2+0.4, GOAL_W/2-0.4);
       pen.aimY=THREE.MathUtils.clamp(pen.aimY - moveDir.y*sp*0.6*dt, 0.35, GOAL_H-0.3);
-      if(pen.t>14) penStartKick(0.7);                                      // don't stall forever
+      if(autoBlue && pen.t<0.1){ pen.aimX=(Math.random()<0.5?-1:1)*(1.5+Math.random()*(GOAL_W/2-2.5)); pen.aimY=0.5+Math.random()*(GOAL_H-1.5); }
+      if(pen.t>(autoBlue?2.5:14)) penStartKick(0.7);                                      // don't stall forever
     } else if(pen.t>3.2) penStartKick(0.5+Math.random()*0.45);      // a bit longer, so you can pick your keeper's side
   }
   if(pen.team===1 && pen.phase!=='live' && pen.phase!=='setup'){       // your keeper: pick the dive with the joystick (until the strike)
@@ -2033,8 +1951,8 @@ function aerialYours(want){
 }
 function aerialCheck(){ if(owner||pen||ball.position.y<1.2) return; const me=ctrlPlayer();
   if(chilenaReq>0 && aerialYours(chilenaWant)) chilenaReq=0;
-  if(me && !aerialBusy(me) && (passReceiver===me || me.pos.distanceTo(ball.position)<6)) aerialTry(me,false,'chestOnly');   // first touch on the chest (headers stay on your button)
-  players.forEach(p=>{ if(p.team===0 && (p===me || chilenaReq>0)) return; aerialTry(p,false,null); }); }   // you: on your button; the rest: by themselves
+  if(!autoBlue && me && !aerialBusy(me) && (passReceiver===me || me.pos.distanceTo(ball.position)<6)) aerialTry(me,false,'chestOnly');   // first touch on the chest (headers stay on your button)
+  players.forEach(p=>{ if(!autoBlue && p.team===0 && (p===me || chilenaReq>0)) return; aerialTry(p,false,null); }); }   // you: on your button; the rest: by themselves
 function aerialStrike(p){
   const near = Math.hypot(ball.position.x-p.pos.x, ball.position.z-p.pos.z) < 3.4 && ball.position.y>(p.chKind==='knee'?0.7:2.0) && ball.position.y<7 && !owner;
   if(!near) return;                                                      // mistimed: he meets thin air
@@ -2134,20 +2052,20 @@ function ballAtFoot(p, foot, useBone){
 // ---- COORDINATED PASS: the pass clip (right or left foot) winds up, and the ball only leaves on the
 // clip's CONTACT frame, from the boot that kicks. The passer keeps the ball at his feet during the swing.
 const PK_W=0.2, PK_TS=1.3;
-let pendingKicker=null, redCombo=0, comboOwner=null;   // redCombo: passes strung together by the rival
+let pendingKicker=null, redCombo=0, comboOwner=null; const combo=[0,0];   // combo[t]: passes strung together by a side
 function kickFootFor(p, dir){
   const h=p.heading, lf=new THREE.Vector3(Math.cos(h),0,-Math.sin(h));
   const sd=dir.x*lf.x+dir.z*lf.z;                       // >0: the ball goes to his left
   if(sd>0.3) return 'L'; if(sd<-0.3) return 'R';
   return Math.random()<0.25?'L':'R';                    // straight ahead: mostly the stronger right foot
 }
-function queueKick(p, dir, release, kind){
+function queueKick(p, dir, release, kind, quick){
   const shot = kind==='shot' && p.act['pk:Soccer_Penalty_Kick'] && p.act['pk:Soccer_Penalty_Kick_1'];
   if(p.gk || !p.act['pk:Soccer_Pass'] || !p.act['pk:Soccer_Pass_1'] || deadTimer>0 || p.pk2){ release(); return; }
   const foot=kickFootFor(p,dir);
   const name = shot ? (foot==='L' ? (Math.random()<0.5?'pk:Soccer_Penalty_Kick_1':'pk:Soccer_Penalty_Kick_3') : (Math.random()<0.5?'pk:Soccer_Penalty_Kick':'pk:Soccer_Penalty_Kick_2'))
                     : (foot==='L'?'pk:Soccer_Pass_1':'pk:Soccer_Pass');
-  const m=GK[name.slice(3)].m, W=shot?0.24:PK_W, ts=shot?1.35:PK_TS;
+  const m=GK[name.slice(3)].m, W=shot?0.24:(quick?0.11:PK_W), ts=shot?1.35:PK_TS;
   if(dir.lengthSq()>0.01){ p.heading=Math.atan2(dir.x,dir.z); p.faceLock=0.8; }
   const st=Math.max(0,(m.kick||0.45)-W*ts);
   p.pk2={t:W, W, st, ts, release, foot, name, fwd: shot?0.95:0.55, lat: shot?0.62:0.32}; owner=p; pendingKicker=p; p.kickClip=name; p.kickClipTs=ts;
@@ -2201,78 +2119,99 @@ function passBall(p,target,power){
   queueKick(p, dq, ()=>passBallNow(p,target,power));
 }
 function passBallNow(p,target,power){
-  // offside: flag goes up now, the pass still runs on, then it's whistled back for the free kick
-  if(throwTimer<=0 && deadTimer<=0 && isOffside(target,p.team)){
-    let ls=linesmen[0]; linesmen.forEach(l=>{ if(Math.abs(l.side*HALF_W-target.pos.x)<Math.abs(ls.side*HALF_W-target.pos.x)) ls=l; });
-    ls.flagUp=2.6;
-    const atk=p.team, spot={x:target.pos.x, z:target.pos.z};
-    scheduleRestart(1.5, 'FUERA DE JUEGO', ()=>offsideCall(atk, spot));
-    // fall through and play the pass so the ball keeps rolling toward the runner
-  }
-  const ps=(1.12+0.24*power)*(p.team===0?1.1:1);   // strike strength: firmer passes, more on a charge (yours a bit more)
-  // TURN to face the pass so the kick animation (and the right foot) point the right way
-  { const d=target.pos.clone().sub(p.pos).setY(0); if(d.lengthSq()>0.02){ p.heading=Math.atan2(d.x,d.z); p.faceLock=0.45; } }
-  ballAtRightFoot(p);                      // the ball leaves from the right boot (not the body centre)
-  // lead a moving receiver only MODESTLY — the ball slows as it rolls, so a big lead/hard pass overshoots
-  const rough=ball.position.distanceTo(target.pos);
-  // how long a ground pass takes to get there (it decelerates as it rolls), then lead him by that much of his run
-  const vArr=THREE.MathUtils.clamp(11+rough*0.22,12,26)*ps*0.82;     // it should still be rolling firmly when it reaches him
-  const r0p=rollTo(groundV0(rough,vArr),rough), tTravel=r0p?r0p.t:1.2;
-  const lead=target.vel?target.vel.clone().setY(0).multiplyScalar(THREE.MathUtils.clamp(tTravel,0.05,1.4)*0.75):new THREE.Vector3();
-  const aim=target.pos.clone().add(lead); aim.y=0;
-  const v=aim.clone().sub(ball.position).setY(0); const dist=v.length();
-  if(dist<1) return; v.normalize();
-  // along the grass by default; chipped over the top when a rival would cut the ground ball out and the chip is safe
-  let blocked=false;
-  if(dist>9 && target && target.team===p.team){
-    const from=ball.position.clone(); from.y=BALL_R;
-    const rg=planBall(p,target,'ground',from).risk;
-    if(rg>0.45){ const rc=planBall(p,target,'chip',from).risk; if(rc+0.12<rg) blocked=true; }
-  }
-  if(blocked){                             // a LOW chip over the defender, dropping on the mate (not a big lob)
-    const T=THREE.MathUtils.clamp(dist/28,0.55,0.95);
-    solveAir(aim.x, 0.8, aim.z, T, -8, 0);
-  }else{                                   // crisp ground pass, weighted to arrive at the receiver still rolling firmly
-    const va=THREE.MathUtils.clamp(11+dist*0.22,12,26)*ps*0.82;
-    kickGround(v, Math.min(118, groundV0(dist, va)));
-  }
-  p.kickCd=0.9; p.holdT=0; owner=null; p.kickKind='pass';
-  // the intended receiver moves to meet the ball, so the pass actually connects (longer for longer passes)
-  if(target && target.team===p.team && !target.gk){ passReceiver=target; passSeekT=THREE.MathUtils.clamp(dist/13,0.6,1.8); }
-  if(throwTimer>0) throwTimer=0;                            // a throw-in was taken
-  showPower(p, power);                                     // pass/throw power bar
+  power=(power==null)?1:power;
+  const from=ball.position.clone(); from.y=BALL_R; const d=Math.hypot(target.pos.x-from.x,target.pos.z-from.z);
+  if(d<1) return;
+  const firm=(0.92+0.3*power)*(p.team===0?1.06:1);          // struck harder on a charged pass (yours a touch more)
+  let mode = d>54 ? 'long' : 'ground';                        // along the grass; a short chip when a rival would cut it out; lofted when he is far away
+  if(mode==='ground' && d>10 && d<=32 && !target.gk){ const pg=planBall(p,target,'ground',from,null,0,firm);
+    if(pg.risk>0.45){ const pc=planBall(p,target,'chip',from); if(pc.risk+0.12<pg.risk) mode='chip'; } }
+  launchPlan(p,{q:target,mode,kind:'feet',firm,d,pw:power});
 }
-
-/* Pick the best teammate to pass to: an OPEN man, reachable, with a clear lane and sensible
-   forward progress — so passes find feet instead of being hit hopefully to wherever. */
-function bestPassTarget(p, allowGK){
-  const dir=p.team===0?1:-1, from=ball.position.clone(); from.y=BALL_R;
-  let best=null, bb=-1e9, bRisk=1;
-  players.forEach(q=>{
-    if(q.team!==p.team||q===p||q.sentOff||(q.fall||0)>0||(q.getupT||0)>0) return;
-    if(q.gk && !allowGK) return;
-    if(isOffside(q,p.team)) return;                     // never slide a pass into an offside mate
-    const dist=Math.hypot(q.pos.x-p.pos.x,q.pos.z-p.pos.z);
-    if(dist<2.5 || dist>46) return;                     // too tight / a hopeful long ball
-    // how much space the receiver has (distance to the nearest opponent)
-    let md=1e9; players.forEach(d=>{ if(d.team===p.team||d.gk||d.sentOff) return; md=Math.min(md,d.pos.distanceTo(q.pos)); });
-    // the pass itself: rolled along the grass (or chipped over a man in the lane) — who gets there first?
-    let risk=planBall(p,q,'ground',from).risk;
-    if(risk>0.4 && dist>10) risk=Math.min(risk, planBall(p,q,'chip',from).risk+0.08);
-    const forward=(q.pos.z-p.pos.z)*dir;                // + = the ball goes forward
-    const sc = Math.min(md,8)*0.9                       // reward a man in space (capped)
-             + THREE.MathUtils.clamp(forward,-6,18)*0.45// forward is good, but not demanded
-             - Math.max(0,dist-26)*0.3                  // over-long passes are harder
-             - risk*9                                   // a ball a rival can get to first is a bad ball
-             - (dist<5?1.5:0)                           // slight bias against tiny square balls
-             - (q.gk?2.5:0);
-    if(sc>bb){ bb=sc; best=q; bRisk=risk; }
-  });
-  bestPassTarget.risk=bRisk;
+// YOUR pass: the team-mate you point at (or, with the stick at rest, the best ball on), read with the same eyes as the
+// CPU — to feet, chipped over a man in the lane, into the space in front of a runner, or long onto a far man
+function humanPass(pl, jd, power){
+  const aim=jd||aimDir(pl), quick=pressureOn(pl)<4.2; let best=null, bs=-1e9;
+  for(const o of passOptions(pl, quick?0.11:PK_W)){
+    const tx=(o.aim?o.aim.x:o.q.pos.x)-pl.pos.x, tz=(o.aim?o.aim.z:o.q.pos.z)-pl.pos.z, l=Math.hypot(tx,tz)||1, al=(tx*aim.x+tz*aim.z)/l;
+    if(jd){ if(al<0.6) continue; } else if(o.kind==='gk') continue;
+    let sc = jd ? al*11+o.val : o.val+al*1.2;                 // where you point comes first; then the better ball
+    if(o.kind==='long') sc-=(jd?0.5:1.5);                     // PASE keeps it on the grass when it can
+    if(!jd && o.risk>0.55) sc-=3;                             // (left to itself it doesn't pick a ball that is likely to be cut out)
+    if(sc>bs){ bs=sc; best=o; } }
+  if(best){ best.firm=(0.92+0.3*power)*1.06; best.pw=power; best.quick=quick; }
   return best;
 }
 
-/* AI open-play pass. Blue carriers feed the human; the CPU finds its best open mate. */
+/* ===================== ON THE BALL =====================
+   The man on the ball reads his options ten times a second: every team-mate he can find — to feet along the grass,
+   chipped over a man in the lane, a long ball / switch of play, or a ball into the space in front of a runner — each
+   one simulated with the real ball physics against every rival's run. Then he plays the best of
+   SHOOT / CROSS / PASS / THROUGH BALL / LONG BALL / CLEAR / SKILL, or keeps carrying it. */
+// what a ball arriving at (qx,qu) is worth — an expected value: what it gains if it gets there (ground made, the room he
+// has, how close to goal) against what losing it costs from where we are (a lot near our own goal, little near theirs)
+function lossCost(bU){ return clampN(2.6-bU*0.035,1.0,5.0); }
+function passVal(bU, qx, qu, md, d, risk){
+  const dG=Math.hypot(qx,HALF_L-qu);
+  const gain=1.0+clampN(qu-bU,-18,32)*0.065+Math.min(md,10)*0.11+(dG<50?(50-dG)*0.055:0);
+  return (1-risk)*gain-risk*lossCost(bU)-(d<6?0.9:0)-Math.max(0,d-34)*0.03;
+}
+function passOptions(p, lead){
+  const t=p.team, sg=t===0?1:-1, T=TAC[t], from=ball.position.clone(); from.y=BALL_R; lead=lead||0;   // lead: the swing time before the ball leaves
+  const bU=ball.position.z*sg, opts=[];
+  for(const q of players){ if(q.team!==t||q===p||q.sentOff||(q.fall||0)>0||(q.getupT||0)>0) continue;
+    const d=Math.hypot(q.pos.x-from.x,q.pos.z-from.z);
+    if(q.gk){ if(bU<-20 && d>8 && d<60){ const pl=planBall(p,q,'ground',from,null,lead); opts.push({q,mode:'ground',kind:'gk',risk:pl.risk,d,md:9,val:0.3-pl.risk*7-(bU>-60?0.6:0)}); } continue; }
+    if(isOffside(q,t)) continue;
+    let md=99; for(const o of players){ if(o.team!==t&&!o.gk&&!o.sentOff){ const dd=Math.hypot(o.pos.x-q.pos.x,o.pos.z-q.pos.z); if(dd<md) md=dd; } }
+    const qu=q.pos.z*sg;
+    if(d>=3 && d<=52){ let pl=planBall(p,q,'ground',from,null,lead), mode='ground';                // to feet (a short chip when a man stands in the lane)
+      if(pl.risk>0.4 && d>10 && d<=32 && md>4){ const pc=planBall(p,q,'chip',from,null,lead); if(pc.risk+0.1<pl.risk){ pl=pc; mode='chip'; } }
+      opts.push({q,mode,kind:'feet',risk:pl.risk,d,md,val:passVal(bU,q.pos.x,qu,md,d,pl.risk)}); }
+    if(d>32 && d<=72 && md>6){ const pl=planBall(p,q,'long',from,null,lead);                                // a long ball / switch of play dropped onto him
+      opts.push({q,mode:'long',kind:'long',risk:pl.risk,d,md,val:passVal(bU,q.pos.x,qu,md,34,pl.risk)-0.5}); }
+    if(T && qu>bU-4 && d>9 && d<58 && T.off-qu<16 && T.off<HALF_L-14 && SHP[q.code].dl!=='D'){       // into the grass behind the last line, in front of his run
+      const au=Math.min(HALF_L-13, Math.max(T.off+7, qu+11));
+      const want=(q.run && q.run.kind==='thru') ? q.run.x : q.pos.x*0.88;
+      const ax=q.pos.x+clampN(want-q.pos.x,-(au-qu)*0.8,(au-qu)*0.8), aim=new THREE.Vector3(ax,0,au*sg);
+      let ms=99; for(const o of players){ if(o.team!==t&&!o.gk&&!o.sentOff){ const dd=Math.hypot(o.pos.x-ax,o.pos.z-aim.z); if(dd<ms) ms=dd; } }
+      const pg=planBall(p,q,'ground',from,aim,lead), pc=(pg.risk>0.35 && d>14 && d<42)?planBall(p,q,'chip',from,aim,lead):null, lob=!!(pc && pc.risk+0.08<pg.risk), pl=lob?pc:pg;
+      const dG=Math.hypot(ax,HALF_L-au), gain=2.4+Math.min(ms,10)*0.1+clampN(au-bU,0,40)*0.04+(dG<50?(50-dG)*0.055:0)+((q.run&&q.run.kind==='thru')?0.8:0);
+      opts.push({q,mode:lob?'chip':'ground',kind:'thru',aim,risk:pl.risk,d,md:ms,val:(1-pl.risk)*gain-pl.risk*lossCost(bU)*0.8}); }
+  }
+  return opts;
+}
+// the best ball to a team-mate's feet (used for headed passes and assisted restarts)
+function bestPassTarget(p, allowGK){
+  let best=null; for(const o of passOptions(p)){ if(o.kind==='long'||o.kind==='thru'||(o.kind==='gk'&&!allowGK)) continue; if(!best||o.val>best.val) best=o; }
+  bestPassTarget.risk=best?best.risk:1; return best?best.q:null;
+}
+// strike the chosen ball (on the pass clip's contact frame), re-aimed from where the ball is NOW; the flag goes up if he strayed offside
+function launchPlan(p,o){
+  const q=o.q, t=p.team;
+  if(throwTimer<=0 && deadTimer<=0 && isOffside(q,t)){
+    let ls=linesmen[0]; linesmen.forEach(l=>{ if(Math.abs(l.side*HALF_W-q.pos.x)<Math.abs(ls.side*HALF_W-q.pos.x)) ls=l; });
+    ls.flagUp=2.6; const spot={x:q.pos.x, z:q.pos.z};
+    scheduleRestart(1.5,'FUERA DE JUEGO',()=>offsideCall(t,spot)); }
+  ballAtRightFoot(p);
+  const from=ball.position.clone(); from.y=BALL_R;
+  const pl=planBall(p,q,o.mode,from,o.kind==='thru'?o.aim:null,0,o.firm);
+  const dv=new THREE.Vector3(pl.aim.x-from.x,0,pl.aim.z-from.z); if(dv.lengthSq()>0.02){ p.heading=Math.atan2(dv.x,dv.z); p.faceLock=0.45; }
+  ballVel.copy(pl.v); ballSpin.copy(pl.w); spinSet=true; kickT=0.1;
+  p.kickCd=0.9; p.holdT=0; owner=null; p.kickKind='pass'; lastTouch=t;
+  if(!q.gk){ passReceiver=q; passSeekT=clampN(pl.endT+0.6,0.8,2.8); }
+  q.gotFrom=p; q.gotT=2.5;
+  if(throwTimer>0) throwTimer=0;                            // a restart was taken
+  passAndMove(p,q);
+  showPower(p, o.pw!=null ? o.pw : (o.mode==='ground'?clampN(pl.d/50,0.3,0.9):0.9));
+}
+// pass and move: after a ball forward or square, a midfielder / forward keeps going into the space for the return
+function passAndMove(p,q){
+  const sh=SHP[p.code]; if(!sh||p.gk||sh.dl==='D'||(p.runCd||0)>0) return;
+  const sg=p.team===0?1:-1, pu=p.pos.z*sg; if(pu<-50 || q.pos.z*sg-pu<-6 || Math.random()>0.55) return;
+  const side=Math.sign(p.pos.x-q.pos.x)||1;
+  p.run={kind:'go', x:clampN(p.pos.x+side*4,-HALF_W+6,HALF_W-6), u:Math.min(pu+17,HALF_L-12), t:1.7}; p.runCd=3;
+}
 // throw-in: the most OPEN team-mate within throwing range (not just the most forward one)
 function throwInTarget(p){
   let best=null, bs=-1e9; const dir=p.team===0?1:-1;
@@ -2282,162 +2221,117 @@ function throwInTarget(p){
   if(!best){ let nd=1e9; players.forEach(q=>{ if(q.team!==p.team||q===p||q.gk||q.sentOff) return; const d=q.pos.distanceTo(p.pos); if(d<nd){nd=d;best=q;} }); }   // nobody in range: the nearest
   return best;
 }
-// CPU: find a team-mate running in behind / with space AHEAD of the ball and play him in
-// best open spot near (rx,rz) for p: far from markers, a clean passing lane from the ball, not on top of a team-mate
-const _fsC=new THREE.Vector3();
-function findSpace(p, rx, rz){
-  const sg=p.team===0?1:-1, cx0=(owner&&owner.team===p.team)?owner.pos.x:ball.position.x, cz0=(owner&&owner.team===p.team)?owner.pos.z:ball.position.z;
-  let best=null, bs=-1e9;
-  for(let i=0;i<13;i++){
-    const ang=(i-1)*Math.PI/6, r = i===0?0:(i%2?7:12);
-    const cx=THREE.MathUtils.clamp(rx+(i?Math.cos(ang)*r:0),-HALF_W+3,HALF_W-3), cz=THREE.MathUtils.clamp(rz+(i?Math.sin(ang)*r:0),-HALF_L+4,HALF_L-4);
-    let md=99, mate=99, lane=0;
-    const lx=cx-cx0, lz=cz-cz0, ll=Math.hypot(lx,lz)||1, ux=lx/ll, uz=lz/ll;
-    for(const o of players){ if(o.sentOff||o===p) continue; const dx=o.pos.x-cx, dz=o.pos.z-cz, d=Math.hypot(dx,dz);
-      if(o.team!==p.team){ if(!o.gk) md=Math.min(md,d);
-        const ox=o.pos.x-cx0, oz=o.pos.z-cz0, al=ox*ux+oz*uz; if(al>2 && al<ll-1){ const pp=Math.abs(ox*uz-oz*ux); if(pp<2.6) lane+=2.6-pp; } }
-      else if(!o.gk) mate=Math.min(mate,d); }
-    const sc = Math.min(md,12)*0.9 - lane*1.5 - Math.hypot(cx-rx,cz-rz)*0.22 + (cz-rz)*sg*0.05 - (mate<7?(7-mate)*0.8:0) - (ll>45?(ll-45)*0.1:0);
-    if(sc>bs){ bs=sc; best=_fsC.set(cx,0,cz).clone(); } }
-  return best;
-}
-function findThroughRunner(p){
-  let run=null, rb=-1e9, rmd=0, rah=0;
-  players.forEach(q=>{ if(q.team!==1||q.gk||q.sentOff||q===p||isOffside(q,1)) return; const ahead=p.pos.z-q.pos.z; if(ahead<4) return;
-    let md=99; players.forEach(o=>{ if(o.team===0&&!o.gk&&!o.sentOff) md=Math.min(md,o.pos.distanceTo(q.pos)); });
-    const d=q.pos.distanceTo(p.pos); if(d>45) return;
-    const sc=ahead*0.45+md+((q.runGamble||0)>0?6:0)-Math.abs(q.pos.x)*0.08-d*0.05; if(md>4 && sc>rb){ rb=sc; run=q; rmd=md; rah=ahead; } });
-  return run ? {q:run, md:rmd, ahead:rah} : null;
-}
-function cpuThroughBall(p){ const r=findThroughRunner(p); if(!r) return false; passBall(p,r.q,0.95); return true; }
 // the CPU strike at goal (corner away from the keeper)
 function cpuShoot(p){
-  const gk=players.find(q=>q.team===0&&q.gk);
+  const gzT=p.team===0?HALF_L:-HALF_L;
+  const gk=players.find(q=>q.team!==p.team&&q.gk);
   const side = gk ? (gk.pos.x>=0?-1:1) : (Math.random()<0.5?-1:1);
   const tx = side*(GOAL_W*0.5-1.0) + (Math.random()-0.5)*0.9;
-  const dir=new THREE.Vector3(tx,0,-HALF_L).sub(ball.position).setY(0);
-  if(dir.lengthSq()<1) dir.set(0,0,-1); dir.normalize();
+  const dir=new THREE.Vector3(tx,0,gzT).sub(ball.position).setY(0);
+  if(dir.lengthSq()<1) dir.set(0,0,Math.sign(gzT)); dir.normalize();
   const pw=0.85+Math.random()*0.15;
   queueKick(p, dir, ()=>{ p.heading=Math.atan2(dir.x,dir.z); p.faceLock=0.6; ballAtRightFoot(p);
     const ty=0.45+Math.random()*Math.random()*3.6;                                 // mostly low, now and then up high
-    aimBallAt(tx, ty, -HALF_L, 46+20*pw, 10+Math.random()*10, (Math.random()-0.5)*16);
+    aimBallAt(tx, ty, gzT, 46+20*pw, 10+Math.random()*10, (Math.random()-0.5)*16);
     p.kickCd=.6; owner=null; showPower(p,pw); }, 'shot');
   return true;
 }
-// where to run with the ball: forward, but away from the rivals' reach (looks ~0.55s ahead in 12 directions)
-function carryPlan(p){
-  const gz=p.team===0?HALF_L:-HALF_L, tg=new THREE.Vector3(THREE.MathUtils.clamp(ball.position.x*0.6,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z).normalize();
+// nothing on and a rival on top of him near his own goal: get rid of it, long and wide up the pitch
+function cpuClear(p){
+  const sg=p.team===0?1:-1, sx=(Math.abs(p.pos.x)>6?Math.sign(p.pos.x):(Math.random()<0.5?-1:1));
+  const dir=new THREE.Vector3(sx*HALF_W*0.62-p.pos.x,0,sg*60).normalize();
+  queueKick(p, dir, ()=>{ ballAtRightFoot(p); ballVel.copy(dir).multiplyScalar(40); ballVel.y=13; kickSpin(dir,-10,0);
+    p.kickCd=0.9; p.holdT=0; owner=null; lastTouch=p.team; showPower(p,1); }, 'shot');
+  return true;
+}
+// where to run with the ball: toward goal but away from the rivals' reach, holding his line unless a clearly better one opens
+function carryPlan(p, pressed){
+  const gz=p.team===0?HALF_L:-HALF_L, sgn=p.team===0?1:-1, tg=new THREE.Vector3(clampN(ball.position.x*0.6,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
+  if(roleOf(p).cross && Math.abs(p.pos.x)>BOX_HALF_W-10 && Math.abs(gz-p.pos.z)>20){                       // a winger out wide: down the line to the byline, or cutting inside to shoot
+    if(p.cutIn) tg.set(Math.sign(p.pos.x)*9-p.pos.x,0,gz-sgn*24-p.pos.z); else tg.set(Math.sign(p.pos.x)*(BOX_HALF_W+3)-p.pos.x,0,gz-sgn*8-p.pos.z); }
+  tg.normalize();
+  const cx=p.carryP?p.carryP.dir.x:Math.sin(p.heading), cz=p.carryP?p.carryP.dir.z:Math.cos(p.heading);
   let best=null, bs=-1e9, bEsc=0;
-  for(let i=0;i<12;i++){ const a=i/12*Math.PI*2, dx=Math.cos(a), dz=Math.sin(a), px=p.pos.x+dx*8, pz=p.pos.z+dz*8;
+  for(let i=0;i<16;i++){ const a=i/16*Math.PI*2, dx=Math.cos(a), dz=Math.sin(a), px=p.pos.x+dx*8, pz=p.pos.z+dz*8;
     if(Math.abs(px)>HALF_W-2.5 || Math.abs(pz)>HALF_L-1.5) continue;
-    let esc=99; for(const o of players){ if(o.team===p.team||o.sentOff||(o.fall||0)>0) continue; esc=Math.min(esc, Math.hypot(o.pos.x-px,o.pos.z-pz)-6.8); }
-    const prog=dx*tg.x+dz*tg.z, sc=prog*2.4+THREE.MathUtils.clamp(esc,-4,6)*0.8;
+    let esc=99; for(const o of players){ if(o.team===p.team||o.sentOff||(o.fall||0)>0) continue;
+      esc=Math.min(esc, Math.hypot(o.pos.x-px,o.pos.z-pz)-6.8, Math.hypot(o.pos.x-p.pos.x-dx*3.5,o.pos.z-p.pos.z-dz*3.5)-3.4); }
+    const prog=dx*tg.x+dz*tg.z, sc=prog*(pressed?1.5:2.4)+clampN(esc,-4,6)*(pressed?1.15:0.8)+(dx*cx+dz*cz)*0.9;
     if(sc>bs){ bs=sc; best=new THREE.Vector3(dx,0,dz); bEsc=esc; } }
   return best ? {dir:best, esc:bEsc, sc:bs} : null;
 }
-// ---- the rival's brain on the ball: score SHOOT / CROSS / THROUGH BALL / PASS / LONG BALL / CARRY and play the best ----
-function cpuDecide(p, opD, inAttack, wingRun){
+// pressure on the man on the ball: how close the nearest rival will be in a moment (a man sprinting in counts as closer)
+function pressureOn(p){
+  let e=99; for(const o of players){ if(o.team===p.team||o.gk||o.sentOff||(o.fall||0)>0) continue;
+    const rx=ball.position.x-o.pos.x, rz=ball.position.z-o.pos.z, d=Math.hypot(rx,rz)||1, c=((o.vel.x-p.vel.x)*rx+(o.vel.z-p.vel.z)*rz)/d; e=Math.min(e,d-Math.max(0,c)*0.3); }
+  return e;
+}
+function cpuDecide(p, opD, wingRun, dt){
   if(p.kickCd>0 || p.pk2) return false;
   const hold=p.holdT||0;
-  if(hold<0.12 && opD>2.2) return false;                                  // settle the first touch
-  if(hold<0.15){ p.dn=[0,1,2,3,4,5].map(()=>(Math.random()-0.5)*1.0); p.spinOk=Math.random()<0.5; p.carryP=null; p.carryT=0; }        // a little personality per possession (not frame-to-frame flicker)
-  const N=p.dn||[0,0,0,0,0,0], Rk=roleOf(p);
-  const goal=new THREE.Vector3(0,0,-HALF_L), dg=ball.position.distanceTo(goal), toLine=Math.abs(ball.position.z+HALF_L);
-  // defenders between the ball and the goal
-  let nBlock=0; { const tg=goal.clone().sub(ball.position).setY(0).normalize();
-    players.forEach(o=>{ if(o.team===p.team||o.gk||o.sentOff) return; const rel=o.pos.clone().sub(ball.position).setY(0), al=rel.dot(tg);
-      if(al>0 && al<Math.min(dg,16) && rel.addScaledVector(tg,-al).length()<2.4+al*0.08) nBlock++; }); }
-  const clear = nBlock===0 && dg<34 && Math.abs(ball.position.x)<GOAL_W+8;
-  const opts=[];
-  // SHOOT
-  if(dg < Rk.shoot+6 && Math.abs(ball.position.x)<GOAL_W+14)
-    opts.push(['shoot', 9.6 - dg*0.16 - nBlock*1.3 + (clear?3.5:0) - Math.max(0,Math.abs(ball.position.x)-GOAL_W/2)*0.12 + (redCombo>=2?0.6:0) + N[0], 0.1]);
-  // CROSS
-  if(Rk.cross && Math.abs(ball.position.x)>BOX_HALF_W-10 && toLine<46){
-    let inBox=0; players.forEach(q=>{ if(q.team===p.team && q!==p && !q.gk && !q.sentOff && Math.abs(q.pos.z+HALF_L)<BOX_DEPTH+10 && Math.abs(q.pos.x)<BOX_HALF_W+4) inBox++; });
-    if(inBox) opts.push(['cross', 2.6 + inBox*1.1 + (toLine<26?1.2:0) - (clear?3:0) + N[1], 0.2]); }
-  // THROUGH BALL
-  if(ball.position.z < HALF_L*0.3){ const r=findThroughRunner(p); if(r){ const fr=ball.position.clone(); fr.y=BALL_R; const rk=planBall(p,r.q,'ground',fr).risk;
-    opts.push(['through', 2.2 + Math.min(r.md,10)*0.22 + r.ahead*0.03 + (redCombo>=2?0.5:0) - rk*3.2 + N[2], 0.25, r.q]); } }
-  // PASS (keep it moving; under pressure it's the safe option; tiki-taka near the box)
-  { let t=bestPassTarget(p);
-    if(!t && Math.abs(p.pos.z-HALF_L)<24 && opD<5) t=players.find(q=>q.team===p.team&&q.gk&&!q.sentOff);   // deep and closed down: back to the keeper
-    if(t){ const fwd=(p.pos.z-t.pos.z), rk=(t.gk?0.1:(bestPassTarget.risk||0));   // + = forward for the rival (it attacks -Z)
-      opts.push(['pass', 1.4 + (opD<3.2?2.3:opD<5?0.9:0) + (hold>0.9?0.9:0) + (hold>1.8?0.8:0) + (inAttack && redCombo<3?0.7:0) + THREE.MathUtils.clamp(fwd,-10,20)*0.05 + (fwd<-4?-0.5:0) - rk*5.0 + N[3], opD<3.2?0.1:0.25, t]); } }
-  // SKILL: a man right in front of him -> roulette past him
-  if(p.spinOk && GK['Soccer_Spin'] && (p.spinCd||0)<=0){ const fd=nearestOppFront(p,4.8);
-    if(fd){ const fdd=fd.pos.distanceTo(p.pos); opts.push(['spin', 3.1 + (fdd<3.6?1.3:0) - (dg<22?1.0:0) + N[5]*0.6, 0.2, fd]); } }
-  // LONG BALL (switch / over the top) from deep
-  if(!inAttack && !wingRun) opts.push(['long', 1.6 + N[4], 0.35]);
-  // CARRY it forward
-  if((p.carryT=(p.carryT||0)-1/60)<=0 || !p.carryP){ p.carryP=carryPlan(p); p.carryT=0.3; }   // re-read the space ~3x a second
-  const cp=p.carryP, esc=cp?cp.esc:-4;
-  const carry = 2.2 + (opD>7?0.9:0) + THREE.MathUtils.clamp(esc*0.35,-2.2,0.7) + (wingRun?2.0:0) - (hold>1.8?1.2:0) - (hold>3.0?1.5:0) + N[5];   // dribble if there's room to escape, then move it on
-  let best=null; for(const o of opts) if(hold>=o[2] && (!best || o[1]>best[1])) best=o;
-  if(!best || best[1] < carry) return false;                               // keep driving with it
-  switch(best[0]){
-    case 'shoot':   return cpuShoot(p);
-    case 'cross':   return cpuCross(p);
-    case 'through': passBall(p,best[3],0.95); return true;
-    case 'pass':    passBall(p,best[3]); return true;
-    case 'long':    return cpuLongBall(p);
-    case 'spin':    { const ok=startSpin(p,best[3]); if(ok) p.spinOk=false; return ok; }
+  { const dq=Math.hypot(ball.position.x,(p.team===0?HALF_L:-HALF_L)-ball.position.z);
+    if(hold<0.12 && opD>2.2 && !(dq<30 && Math.abs(ball.position.x)<GOAL_W)) return false; }   // settle the first touch (in front of goal he hits it first time)
+  if(hold<0.15 || !p.dn){ p.dn=[0,1,2,3,4,5].map(()=>(Math.random()-0.5)*1.0); p.spinOk=Math.random()<0.5; p.cutIn=Math.random()<0.45; p.carryP=null; p.carryT=0; p.decT=0; }   // a little personality per possession (not frame-to-frame flicker)
+  if((p.carryT=(p.carryT||0)-dt)<=0 || !p.carryP){ p.carryP=carryPlan(p, opD<4.5); p.carryT=0.25; }   // re-reads the space around him ~4x a second
+  if((p.decT=(p.decT||0)-dt)>0) return false; p.decT=0.1;
+  const t=p.team, sg=t===0?1:-1, gzT=sg*HALF_L, N=p.dn, Rk=roleOf(p), CB=combo[t], T=TAC[t];
+  const bX=ball.position.x, bZ=ball.position.z, bU=bZ*sg, dg=Math.hypot(bX,gzT-bZ)||1, toLine=HALF_L-bU;
+  let nBlock=0; { const gx=-bX/dg, gzz=(gzT-bZ)/dg;                        // defenders between the ball and the goal
+    for(const o of players){ if(o.team===t||o.gk||o.sentOff) continue; const rx=o.pos.x-bX, rz=o.pos.z-bZ, al=rx*gx+rz*gzz;
+      if(al>0 && al<Math.min(dg,16) && Math.abs(rx*gzz-rz*gx)<2.4+al*0.08) nBlock++; } }
+  const opE=Math.min(opD,pressureOn(p));
+  const clear = nBlock===0 && dg<34 && Math.abs(bX)<GOAL_W+8, pressed=opE<3.2, quick=opE<4.2;
+  let best=null; const pick=(n,s,a)=>{ if(!best||s>best.s) best={n,s,a}; };
+  if(dg<Rk.shoot+6 && Math.abs(bX)<GOAL_W+14)
+    pick('shoot', 9.6-dg*0.16-nBlock*1.3+(clear?3.5:0)-Math.max(0,Math.abs(bX)-GOAL_W/2)*0.12+(CB>=2?0.6:0)+(dg<44 && Math.abs(bX)<20?0.8:0)+(hold>1.0?0.6:0)+(hold>2.0?0.8:0)+N[0]);
+  if(Rk.cross && Math.abs(bX)>BOX_HALF_W-10 && toLine<46 && hold>=0.2){
+    let inBox=0; for(const q of players){ if(q.team===t && q!==p && !q.gk && !q.sentOff && Math.abs(q.pos.z-gzT)<BOX_DEPTH+10 && Math.abs(q.pos.x)<BOX_HALF_W+4) inBox++; }
+    if(inBox) pick('cross', 2.6+inBox*1.1+(toLine<26?1.2:0)+(hold>1.2?0.8:0)+(hold>2.2?1.0:0)-(clear?3:0)+N[1]); }
+  if(pressed || hold>=0.22){
+    const urge=(opE<3.2?2.0:opE<5?0.8:0)+(hold>0.9?0.7:0)+(hold>1.8?0.8:0);   // closed down, or on it a while: move it on
+    let nSafe=0;
+    for(const o of passOptions(p, quick?0.11:PK_W)){ if(o.risk<0.3 && o.kind!=='gk') nSafe++;
+      if(o.risk>(bU>40?0.72:0.62)) continue;                               // not a ball he would lose more often than not (a bit more daring near their goal)
+      let v=o.val+urge*clampN(1-o.risk*2.2,0,1);                            // being hurried favours the SAFE ball, not a hopeful one
+      const fwdBall = o.kind!=='gk' && (o.aim?o.aim.z:o.q.pos.z)*sg-bU>10;
+      if(fwdBall && T && T.since<4) v+=0.8;                                 // just won it: go forward while they are out of shape
+      if(o.kind==='feet'){ v+=N[3]*0.6+(toLine<68?1.1:0)+(Math.hypot(o.q.pos.x,gzT-o.q.pos.z)<34?0.8:0);   /* around their box: combine, and find the man in front of goal */ if(o.q===p.gotFrom && (p.gotT||0)>0 && opE>4) v-=0.9; }   // (not straight back where it came from)
+      else if(o.kind==='thru') v+=N[2]*0.6+(CB>=2?0.4:0);
+      else if(o.kind==='long'){ if(hold<0.35) continue; v+=N[4]*0.6; }
+      else v+=(pressed?1.0:-1.5);                                          // back to the keeper: only when closed down
+      pick(o.kind, v, o); }
+    if(bU<-62 && opE<3.6 && nSafe===0) pick('clear', 3.4+(opE<2.4?1.2:0));     // deep, closed down and nothing safe on
   }
-  return false;
+  if(p.spinOk && GK['Soccer_Spin'] && (p.spinCd||0)<=0 && hold>=0.2 && Rk.line!=='D'){ const fd=nearestOppFront(p,4.8);   // a man right in front of him: roulette past him
+    if(fd){ const fdd=fd.pos.distanceTo(p.pos); pick('spin', 3.1+(fdd<3.6?1.3:0)-(dg<22?1.0:0)+N[5]*0.6, fd); } }
+  const cp=p.carryP, esc=cp?cp.esc:-4;
+  const carry=2.0+(opE>7?0.9:0)+clampN(esc*0.35,-2.4,0.8)+(wingRun && toLine>28 && hold<2.6?2.0:0)-(Rk.line==='D'?0.7:0)-(hold>1.8?1.2:0)-(hold>3.0?1.5:0)-(toLine<64 && hold>1.5?0.8:0)+N[5];   // dribble while there is room, then move it on
+  if(!best || best.s<carry) return false;                                 // keep driving with it
+  switch(best.n){
+    case 'shoot': return cpuShoot(p);
+    case 'cross': return cpuCross(p);
+    case 'clear': return cpuClear(p);
+    case 'spin' : { const ok=startSpin(p,best.a); if(ok) p.spinOk=false; return ok; }
+    default     : { const o=best.a, dq=(o.aim||o.q.pos).clone().sub(p.pos).setY(0);
+                    queueKick(p, dq, ()=>launchPlan(p,o), o.kind==='long'?'shot':undefined, quick); return true; }
+  }
 }
 // CPU winger cross: a ball floated onto the head of a man in the box (header / chilena follow on their own)
 function cpuCross(p){
   const gz=p.team===0?HALF_L:-HALF_L; let best=null, bs=-1e9;
   players.forEach(q=>{ if(q.team!==p.team||q===p||q.gk||q.sentOff) return; const inBox=Math.abs(q.pos.z-gz)<BOX_DEPTH+10 && Math.abs(q.pos.x)<BOX_HALF_W+4;
     if(!inBox) return; let md=99; players.forEach(o=>{ if(o.team!==p.team&&!o.sentOff) md=Math.min(md,o.pos.distanceTo(q.pos)); });
-    const sc=Math.min(md,8) - Math.abs(q.pos.x)*0.1 + (LINEUP[q.team][q.roleIdx]==='ST'?5:roleOf(q).line==='F'?2:0); if(sc>bs){ bs=sc; best=q; } });
+    const far=(q.pos.x-p.pos.x)*Math.sign(-p.pos.x||1);                 // how far across goal he is from the crosser
+    const sc=Math.min(md,8)*1.2 + Math.min(far,40)*0.06 - Math.abs(q.pos.x)*0.06 + (LINEUP[q.team][q.roleIdx]==='ST'?2.5:roleOf(q).line==='F'?1.5:0); if(sc>bs){ bs=sc; best=q; } });
   if(!best) return false;
   const mate=best;
   queueKick(p, mate.pos.clone().sub(p.pos).setY(0), ()=>{
     ballAtRightFoot(p);
-    const tgt=mate.pos.clone().addScaledVector(mate.vel||new THREE.Vector3(),0.35), to=tgt.sub(ball.position).setY(0), d=to.length();
-    const T=THREE.MathUtils.clamp(d/28,0.65,1.4); to.normalize();
+    const d0=mate.pos.distanceTo(ball.position), T=THREE.MathUtils.clamp(d0/28,0.65,1.4);
+    const tgt=mate.pos.clone().addScaledVector(mate.vel||new THREE.Vector3(),T*0.7), to=tgt.sub(ball.position).setY(0), d=to.length(); to.normalize();   // into his run
     const ap=ball.position.clone().addScaledVector(to,d); solveAir(ap.x, 4.6, ap.z, T, -8, (Math.random()<0.5?-1:1)*(14+Math.random()*14));   // whipped in with a bit of curl
     p.kickCd=0.9; owner=null; lastTouch=p.team; passReceiver=mate; passSeekT=T+0.3; showPower(p,0.8);
   }, 'shot');
-  return true;
-}
-// CPU long ball: a diagonal / over the top to an open man far up the pitch (lofted onto him)
-function cpuLongBall(p){
-  const dir=p.team===0?1:-1; let best=null, bs=-1e9;
-  players.forEach(q=>{ if(q.team!==p.team||q===p||q.gk||q.sentOff||isOffside(q,p.team)) return; const d=q.pos.distanceTo(p.pos); if(d<24||d>62) return;
-    const fwd=(q.pos.z-p.pos.z)*dir; if(fwd<8) return;
-    let md=99; players.forEach(o=>{ if(o.team!==p.team&&!o.gk&&!o.sentOff) md=Math.min(md,o.pos.distanceTo(q.pos)); });
-    const sc=Math.min(md,12)+fwd*0.15-d*0.05; if(md>5 && sc>bs){ bs=sc; best=q; } });
-  if(!best) return false;
-  const tgt=best;
-  queueKick(p, tgt.pos.clone().sub(p.pos).setY(0), ()=>{
-    ballAtRightFoot(p);
-    const aim=tgt.pos.clone().addScaledVector(tgt.vel||new THREE.Vector3(),0.9), to=aim.sub(ball.position).setY(0), d=to.length(); to.normalize();
-    const T=THREE.MathUtils.clamp(d/30,0.9,1.9);
-    const ap=ball.position.clone().addScaledVector(to,d); solveAir(ap.x, 1.0, ap.z, T, -10, 0);
-    p.kickCd=0.9; p.holdT=0; owner=null; lastTouch=p.team; passReceiver=tgt; passSeekT=T+0.4; showPower(p,0.9);
-  }, 'shot');
-  return true;
-}
-function aiTryPass(p){
-  if(p.kickCd>0) return false;
-  if(p.team===1){ if(p.longRoll===undefined) p.longRoll=Math.random()<0.45; if(p.longRoll && cpuLongBall(p)){ p.longRoll=false; return true; } }   // the rival mixes in long balls
-  if(p.team===1 && Math.random()<0.45 && cpuThroughBall(p)) return true;   // the rival looks forward first: balls in behind
-  let target=null;
-  if(p.team===0){ const h=ctrlPlayer(); if(h!==p && !h.gk && !h.sentOff) target=h; }
-  if(!target){
-    target=bestPassTarget(p);
-    // deep in our own half, closed down and no good option -> play it back to the keeper (both teams)
-    const ownGoalZ=p.team===0?-HALF_L:HALF_L;
-    let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
-    if(!target && Math.abs(p.pos.z-ownGoalZ)<24 && opD<5){
-      const gk=players.find(q=>q.team===p.team&&q.gk&&!q.sentOff);
-      if(gk){ passBall(p,gk); return true; }
-    }
-  }
-  if(!target) return false;
-  passBall(p,target);
   return true;
 }
 
@@ -2567,10 +2461,10 @@ function stumbleIfBehind(v, robber){
 /* CPU dispossession: a red defender reaching the human/blue carrier wins the ball */
 function cpuSteal(dtS){
   if(awaitKickoffPass||koGrace>0||throwTimer>0||kickoffHold>0||deadTimer>0) return;   // no stealing during any restart
-  if(!(owner && owner.team===0) || owner.pk2 || owner.gk || (owner.spinT||0)>0 || ((owner.oneT||0)>0 && owner.oneKind==='hurdle')) return;   // never rob the keeper (or a man mid-roulette)
+  if(!owner || !cpuTackler({team:1-owner.team}) || owner.pk2 || owner.gk || (owner.spinT||0)>0 || ((owner.oneT||0)>0 && owner.oneKind==='hurdle')) return;   // never rob the keeper (or a man mid-roulette)
   const carrier=owner; dtS=dtS||1/60;
   for(const p of players){
-    if(p.team!==1||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
+    if(p.team===carrier.team||p.gk||(p.fall||0)>0||(p.stealCd||0)>0||p.sentOff) continue;
     const dd=p.pos.distanceTo(carrier.pos);
     // close enough to reach the ball: wins it at a steady rate (more if he comes from the front or you're slow)
     const toBall=ball.position.clone().sub(p.pos).setY(0), front=toBall.lengthSq()>0.01 ? toBall.normalize().dot(new THREE.Vector3(Math.sin(p.heading),0,Math.cos(p.heading))) : 1;
@@ -2581,7 +2475,7 @@ function cpuSteal(dtS){
       away.normalize();
       ball.position.set(p.pos.x+away.x*0.7,BALL_R,p.pos.z+away.z*0.7);
       ballVel.copy(away).multiplyScalar(4);
-      owner=p; p.stealCd=0.8;
+      owner=p; p.stealCd=0.8; carrier.stealCd=Math.max(carrier.stealCd||0,0.9);
       stumbleIfBehind(carrier,p);
       break;
     }
@@ -2600,12 +2494,13 @@ function ballDeflect(){
     if(!p.gk && ball.position.y<1.5 && ballVel.length()<(p===passReceiver?85:48) && !(p.slide>0) && (p.kickCd||0)<=0.3 && (p.chT||0)<=0 && !p.pk2){
       let t2=0; if(seg2>1e-6) t2=THREE.MathUtils.clamp(((p.pos.x-sx)*segx+(p.pos.z-sz)*segz)/seg2,0,1);
       const qx=sx+segx*t2-p.pos.x, qz=sz+segz*t2-p.pos.z, qd=Math.hypot(qx,qz);
-      if(qd<POSSESS+0.15){                                // he gets a foot to it: cushion it in front of him
+      const mine = p===passReceiver || p.team===lastTouch;    // the man it is meant for (or a team-mate): full reach; a rival has to be nearer a fast ball, and can't nick it off the boot
+      if(qd<(mine ? POSSESS+0.15 : (kickT>0 ? 1.0 : rivalReach(ballVel.length())))){                                // he gets a foot to it: cushion it in front of him
         const ux=qd>0.01?qx/qd:Math.sin(p.heading), uz=qd>0.01?qz/qd:Math.cos(p.heading);
         ball.position.x=p.pos.x+ux*1.25; ball.position.z=p.pos.z+uz*1.25; ball.position.y=Math.min(ball.position.y,BALL_R+0.2);
         ballVel.multiplyScalar(0.18); ballVel.y=0; p.trapT=0.3; continue; }
     }
-    const rad   = p.gk ? 1.9 : (P_R+BALL_R+0.2);        // body size (keepers are a bigger wall)
+    const rad   = p.gk ? 1.9 : 1.45;                    // body size (keepers are a bigger wall)
     const maxY  = p.gk ? GOAL_H : 2.2;
     const minSp = p.gk ? 1.2 : 2.5;                      // even a slowish ball bounces off a body (no pass-through)
     if(ball.position.y>=maxY || ballVel.length()<=minSp) continue;
@@ -2689,6 +2584,233 @@ function predictAtGoalLine(team){
   return null;
 }
 
+/* ===================== TEAM SHAPE =====================
+   Each side moves as a block, like a real team.
+   WITHOUT the ball: a flat back four whose height follows the ball (it drops off when the man on the ball has time
+   and squeezes up when he is pressed), a midfield line in front of it and the front men, all shifted toward the side
+   the ball is on. One man presses, the next one covers him, the rest pick up whoever comes into their zone.
+   WITH the ball: the centre-backs split, the holding man shows behind the ball, the full-backs give the width (the one
+   on the ball side joins in), the interiors show between the lines, the wingers stretch the pitch and the 9 plays on
+   the last defender's shoulder. Three team-mates always make a triangle round the ball, and forwards time runs in behind.
+   u = distance up the pitch in the team's own frame (its goal at -HALF_L, the goal it attacks at +HALF_L). */
+// shape sheet: dl = the line he defends in (D back four · M midfield · A the 10 · W winger · S striker) · dx = how far
+// from the block's centre line he stands · dd = depth inside his line
+const SHP={ GK:{dl:'G',dx:0,dd:0}, LB:{dl:'D',dx:33,dd:0}, RB:{dl:'D',dx:33,dd:0}, LCB:{dl:'D',dx:11,dd:0}, RCB:{dl:'D',dx:11,dd:0},
+  CDM:{dl:'M',dx:0,dd:-5}, LDM:{dl:'M',dx:11,dd:-3}, RDM:{dl:'M',dx:11,dd:-3}, LCM:{dl:'M',dx:19,dd:1}, RCM:{dl:'M',dx:19,dd:1},
+  CAM:{dl:'A',dx:0,dd:0}, LW:{dl:'W',dx:41,dd:0}, RW:{dl:'W',dx:41,dd:0}, ST:{dl:'S',dx:0,dd:0} };
+const TAC=[null,null];
+// where the back line stands (u) for a ball at u — from a high line at halfway down to the six-yard box
+const LD_K=[[-118,-113],[-110,-111],[-90,-101],[-70,-90],[-40,-76],[0,-52],[40,-26],[90,-6],[118,-4]];
+function knots(K,v){ if(v<=K[0][0]) return K[0][1];
+  for(let i=1;i<K.length;i++){ if(v<=K[i][0]){ const a=K[i-1], b=K[i]; return a[1]+(b[1]-a[1])*(v-a[0])/(b[0]-a[0]); } }
+  return K[K.length-1][1]; }
+const clampN=THREE.MathUtils.clamp;
+// how much rivals of `team` block the straight ball from (ax,az) to (bx,bz): 0 = a clean lane
+function laneBlock(team, ax, az, bx, bz){
+  const lx=bx-ax, lz=bz-az, ll=Math.hypot(lx,lz); if(ll<1) return 0; const ux=lx/ll, uz=lz/ll; let lane=0;
+  for(const o of players){ if(o.team===team||o.sentOff) continue; const ox=o.pos.x-ax, oz=o.pos.z-az, al=ox*ux+oz*uz;
+    if(al>1.5 && al<ll-0.8){ const pp=Math.abs(ox*uz-oz*ux), w=2.2+al*0.045; if(pp<w) lane+=(w-pp)/w; } }
+  return lane; }
+function tacUpdate(dt){
+  for(const t of [0,1]){
+    const sg=t===0?1:-1, T=TAC[t]||(TAC[t]={fx:0,fu:0,ld:-60,lm:-40,have:false,since:9,presser:null,second:null,runT:0,press:99,off:0.5,rivHi:0,car:null});
+    T.sg=sg;
+    // the team reads the play from where the ball is going (a moment ahead), smoothed so the block glides instead of twitching
+    const tx=clampN(ball.position.x+ballVel.x*0.2,-HALF_W,HALF_W), tu=clampN((ball.position.z+ballVel.z*0.2)*sg,-HALF_L,HALF_L);
+    const kf=Math.min(1,dt*6); T.fx+=(tx-T.fx)*kf; T.fu+=(tu-T.fu)*kf;
+    // we defend the moment the ball is lost, and only open up to attack once it is under control (so a 50-50 doesn't swing both teams about)
+    const have = ctlT[t]>=0.55 || !!(owner && owner.gk && owner.team===t); if(have!==T.have){ T.have=have; T.since=0; } else T.since+=dt;
+    T.k=Math.min(1,dt*3.5);                 // how fast a man's place in the shape slides to its new spot
+    let l1=-1e9, l2=-1e9, hi=1e9;
+    for(const o of players){ if(o.team===t||o.sentOff) continue; const u=o.pos.z*sg; if(u>l1){ l2=l1; l1=u; } else if(u>l2) l2=u; if(!o.gk && u<hi) hi=u; }
+    T.off=Math.max(0.5,l2);                 // the rival's offside line (there is no offside in our own half)
+    T.rivHi=hi;                             // the rival standing closest to OUR goal
+    T.out=players.filter(q=>q.team===t&&!q.gk&&!q.sentOff);
+    if(have) tacAttack(t,T,dt); else tacDefend(t,T,dt);
+    for(const p of T.out){ const S=p.slot; S.x=clampN(S.x,-HALF_W+3,HALF_W-3); S.u=clampN(S.u,-HALF_L+3,HALF_L-3); S.z=S.u*sg; }
+  }
+}
+function tacDefend(t,T,dt){
+  const sg=T.sg, bu=T.fu, bx=T.fx, out=T.out, bX=ball.position.x, bU=ball.position.z*sg;
+  const car=(owner && owner.team!==t && !owner.gk)?owner:null;
+  T.car=null;
+  // --- how high the back line stands
+  let pd=99; for(const q of out){ const d=Math.hypot(q.pos.x-bX,q.pos.z-ball.position.z); if(d<pd) pd=d; }
+  let want=knots(LD_K,bu);
+  if(car){ const fwd=-Math.cos(car.heading)*sg;                         // + = he is facing our goal
+    if(pd>8 && fwd>0.3) want-=5; else if(pd<4.5 || fwd<-0.3) want+=3; }
+  want=Math.max(want,-113);
+  T.ld+=(want-T.ld)*Math.min(1,dt*(want<T.ld?4:1.8));                   // drops quickly, steps up calmly
+  const ld=T.ld, lm=clampN(bu-10, ld+15, ld+32); T.lm=lm;
+  const deep=bu<-80, cxD=clampN(bx*0.42,-30,30)*(deep?0.8:1), cxM=clampN(bx*0.5,-34,34);
+  // --- everyone's place in the block
+  for(const p of out){ const sh=SHP[p.code], S=p.slot; let x,u;
+    switch(sh.dl){
+      case 'D': x=cxD+p.fl*sh.dx*(deep?0.78:1); u=ld; break;
+      case 'M': x=cxM+p.fl*sh.dx; u=lm+sh.dd; break;
+      case 'A': x=clampN(bx*0.45,-24,24); u=clampN(bu-6, lm+5, lm+28); break;
+      case 'W': { const hi=clampN(bu-4, lm+2, lm+26); u=hi; x=cxM*0.8+p.fl*(hi>lm+12?44:sh.dx); break; }
+      default : x=clampN(bx*0.35,-20,20); u = bu<-40 ? clampN(bu+55, lm+14, -3) : clampN(bu-2, lm+14, lm+40);   // the 9: first to press high, the outlet when we sit deep
+    }
+    x=clampN(x,-HALF_W+4,HALF_W-4); if(p.hx===undefined){ p.hx=x; p.hu=u; } p.hx+=(x-p.hx)*T.k; p.hu+=(u-p.hu)*(sh.dl==='D'?1:T.k);
+    S.x=S.x0=p.hx; S.u=S.u0=p.hu; S.urg=0; S.mark=null; S.kind='def'; p.supK=null; if(p.run) p.run=null;
+  }
+  // --- who goes to the ball: whoever gets there first, weighted by his job (a centre-back doesn't leave the line for a
+  //     ball in midfield, the 9 doesn't chase into his own third); the man already pressing keeps the job unless clearly beaten
+  const ex=bX+ballVel.x*0.3, eu=bU+ballVel.z*sg*0.3;
+  let best=null, bs=1e9, sec=null, ss=1e9;
+  for(const p of out){ if((p.fall||0)>0||(p.getupT||0)>0) continue;
+    const sh=SHP[p.code], S=p.slot, d=Math.hypot(p.pos.x-ex,p.pos.z*sg-eu), dz=Math.hypot(S.x-ex,S.u-eu);   // dz: how far the ball is from his zone
+    let f;
+    if(sh.dl==='D'){ f = sh.dx>20 ? (dz<20?1:1.7) : (dz<15?1.05:2.4); if(eu>ld+30) f*=1.5; }
+    else if(sh.dl==='S') f = eu>lm+8 ? 0.85 : 2.2;
+    else if(sh.dl==='W') f = eu>lm-6 ? 0.95 : 1.5;
+    else f=0.9;
+    let sc=d*f; if(p===T.presser) sc*=0.8;
+    if(sc<bs){ sec=best; ss=bs; best=p; bs=sc; } else if(sc<ss){ sec=p; ss=sc; } }
+  T.presser=best; T.second=sec;
+  const gx=-bX, gu=-HALF_L-bU, gl=Math.hypot(gx,gu)||1;                  // from the ball toward our goal
+  if(best){ const S=best.slot, dB=Math.hypot(best.pos.x-bX,best.pos.z*sg-bU);
+    const gside=((best.pos.x-bX)*gx+(best.pos.z*sg-bU)*gu)/gl;           // + = he is goal-side of the ball
+    if(dB>4.5 && gside<1.5){ S.x=bX+gx/gl*2.2; S.u=bU+gu/gl*2.2; }        // get goal-side first...
+    else { S.x=bX; S.u=bU; }                                             // ...then go and win it
+    S.kind='press'; S.urg=2; }
+  if(sec && ss<45){ const S=sec.slot, sh=SHP[sec.code];
+    if((T.since<2.5 && bu>-30 && car) || (bu<-78 && ss<12)){ S.x=bX; S.u=bU; S.kind='press'; S.urg=2; }   // just lost it up the pitch / the ball is in our box: two go
+    else if(sh.dl!=='S'){ const cvx=bX+gx/gl*8, cvu=bU+gu/gl*8;           // the cover: behind the presser, on the way to goal
+      S.x+=(cvx-S.x)*0.55; S.u = sh.dl==='D' ? Math.min(S.u, Math.max(ld-2.5, cvu)) : S.u+(cvu-S.u)*0.55; S.kind='cover'; S.urg=1; } }
+  // --- marking: every rival ahead of the ball is picked up by the man whose zone he is in (the most dangerous first)
+  const foes=[]; for(const o of players){ if(o.team===t||o.gk||o.sentOff||o===car) continue; if(o.pos.z*sg<bu+14) foes.push(o); }
+  foes.sort((a,b)=>(a.pos.z-b.pos.z)*sg);
+  for(const o of foes){ const ou=o.pos.z*sg, inBox=ou<-HALF_L+BOX_DEPTH+6 && Math.abs(o.pos.x)<BOX_HALF_W+4; let bq=null, bc=1e9;
+    for(const p of out){ const S=p.slot, sh=SHP[p.code]; if(S.kind==='press'||S.mark||sh.dl==='S') continue;
+      const dx=Math.abs(S.x0-o.pos.x), du=ou-S.u0, D=sh.dl==='D';
+      if(dx>(D?(inBox?22:15):13) || du<(inBox?-22:-12) || du>(D?14:10)) continue;
+      const c=dx+Math.abs(du)*0.6+(D?0:4); if(c<bc){ bc=c; bq=p; } }
+    if(bq) bq.slot.mark=o; }
+  for(const p of out){ const S=p.slot, o=S.mark; if(!o) continue; const sh=SHP[p.code];
+    const ox=o.pos.x-o.vel.x*0.22, ou=(o.pos.z-o.vel.z*0.22)*sg;                        // (he reads his man's move a moment late, as defenders do)
+    const inBox=ou<-HALF_L+BOX_DEPTH+6 && Math.abs(ox)<BOX_HALF_W+4;
+    if(sh.dl==='D'){ let u=ld;
+      if(inBox||deep){ S.x+=(ox-S.x)*0.9; u=Math.max(-114, ou-1.8); }                  // in and around our box: touch-tight, goal-side
+      else { S.x+=(ox-S.x)*0.75;
+        if(ou>ld) u=Math.min(ld+6, ou-2.2);                                            // he drops off the front: step up a little with him
+        else if(-o.vel.z*sg>7 && ou>ld-10) u=ou-1.5; }                                 // a runner going in behind: go with him
+      S.u = S.kind==='cover' ? Math.min(S.u,u) : u; }
+    else { S.x+=(ox-S.x)*0.55+(bX-S.x)*0.06; S.u=clampN(ou-2, ld+5, S.u+3); }          // goal-side of him and a touch toward the ball (in the passing lane)
+    if(S.urg<1 && Math.hypot(S.x-p.pos.x,S.u-p.pos.z*sg)>7) S.urg=1; }
+}
+function tacAttack(t,T,dt){
+  const sg=T.sg, bu=T.fu, bx=T.fx, out=T.out, off=T.off, bU=ball.position.z*sg;
+  const car = (owner && owner.team===t) ? owner : ((passReceiver && passReceiver.team===t && !passReceiver.gk) ? passReceiver : null);
+  T.car=car; T.presser=null; T.second=null;
+  const cap=Math.max(off-0.8, bU-0.5);                                    // the furthest forward a man can stand and stay onside
+  const cbU0=clampN(bu-44,-88,4), cbU=(T.rivHi<cbU0+4)?Math.max(-96,T.rivHi-4):cbU0;   // centre-backs stay goal-side of the rival's outlet
+  const fin=bu>50, wideB=Math.abs(bx)>BOX_HALF_W-12, gkBall=!!(owner && owner.gk && owner.team===t);
+  for(const p of out){ const c=p.code, fl=p.fl, S=p.slot, bs=bx*fl; let x,u;      // bs>0: the ball is on his side
+    switch(c){
+      case 'LCB': case 'RCB': u=cbU; x=fl*(bu<-60?23:13)+bx*0.22; if(gkBall){ u=-HALF_L+BOX_DEPTH-5; x=fl*27; } break;   // keeper has it: split to the corners of the area
+      case 'LB': case 'RB':
+        if(bu<-45){ u=clampN(bu+16,-78,-8); x=fl*(HALF_W-9); }                                   // building up: wide outlets
+        else if(!fin){ u = bs>6 ? bu+5 : bu-12; x=fl*(bs>6?HALF_W-8:HALF_W-17); }                // middle third: the ball-side one joins in
+        else if(bs>6){ u=Math.min(bu-3,HALF_L-22); x=fl*(HALF_W-8); }                            // final third: support outside the winger...
+        else { u=clampN(bu-34,-10,22); x=fl*24; }                                                // ...while the far one tucks in to guard the counter
+        break;
+      case 'CDM': u=clampN(bu-13,cbU+10,cbU+34); if(fin) u=Math.min(u,HALF_L-48); x=clampN(bx*0.45,-22,22); break;
+      case 'LDM': case 'RDM':
+        if(bs>0 || (bs===0 && fl<0)){ u=bu-10; x=bx*0.55+fl*5; if(fin) u=Math.min(u,HALF_L-40); }
+        else { u=bu-18; x=bx*0.25+fl*13; if(fin) u=Math.min(u,HALF_L-56); }
+        u=Math.max(u,cbU+8); break;
+      case 'LCM': case 'RCM':
+        if(bs>0){ u=Math.max(bu+3,cbU+16); x = Math.abs(bx)>40 ? bx-fl*15 : fl*16+bx*0.3; if(fin) u=Math.min(u,HALF_L-30); }   // near interior: close support
+        else { u=Math.max(bu+15,cbU+24); x=fl*19+bx*0.2; if(fin){ u=HALF_L-20; x=fl*8; } }                                      // far interior: between the lines, arriving in the box
+        break;
+      case 'CAM': u=clampN(bu+15,-30,off-5); x=clampN(bx*0.4,-20,20); if(fin) u=Math.min(u,HALF_L-24); break;
+      case 'LW': case 'RW': u=clampN(bu+28,-25,HALF_L-9); x=fl*(bs<-6?HALF_W-13:HALF_W-8);
+        if(fin && wideB && bs<-6){ x=fl*11; u=HALF_L-11; }                                       // the cross comes from the other side: far post
+        break;
+      default: u=clampN(bu+34,-8,HALF_L-10); x=clampN(bx*0.4,-13,13);
+        if(fin && wideB){ x=Math.sign(bx)*4; u=HALF_L-9; }                                       // near post
+    }
+    x=clampN(x,-HALF_W+4,HALF_W-4); if(p.hx===undefined){ p.hx=x; p.hu=u; } p.hx+=(x-p.hx)*T.k; p.hu+=(u-p.hu)*T.k;
+    S.x=S.x0=p.hx; S.u=S.u0=(SHP[c].dl==='D'?p.hu:Math.min(p.hu,cap)); S.urg=0; S.mark=null; S.kind='atk';
+  }
+  // --- the triangle round the ball: one ahead on the inside, one square, one behind — each in a clean passing lane
+  const taken=new Set();
+  if(car && !car.gk){ const cx=car.pos.x, cz=car.pos.z, cu=cz*sg;
+    let nd=99, nr=null; for(const o of players){ if(o.team===t||o.sentOff||o.gk) continue; const d=Math.hypot(o.pos.x-cx,o.pos.z-cz); if(d<nd){ nd=d; nr=o; } }
+    T.press=nd;
+    const ins = Math.abs(cx)>16 ? -Math.sign(cx) : ((nr && nr.pos.x>cx) ? -1 : 1);        // toward the middle when wide; away from the nearest rival when central
+    const edge = Math.abs(cx)>HALF_W-14, away = nr ? (Math.sign(cx-nr.pos.x)||ins) : -ins;
+    const SL=[ ['F', ins*11, 15], ['L', edge?ins*20:-ins*17, edge?6:3], ['B', (edge?ins:away)*9, -14] ];
+    for(const sl of SL){ const key=sl[0]; let bpx=0, bpu=0, bsc=-1e9;
+      for(const rot of [0,0.45,-0.45]){ const cs=Math.cos(rot), sn=Math.sin(rot);
+        const px=clampN(cx+sl[1]*cs-sl[2]*sn,-HALF_W+4,HALF_W-4), pu=clampN(Math.min(cu+sl[1]*sn+sl[2]*cs, key==='B'?1e9:cap),-HALF_L+6,HALF_L-6);
+        let md=9; for(const o of players){ if(o.team===t||o.sentOff||o.gk) continue; const d=Math.hypot(o.pos.x-px,o.pos.z*sg-pu); if(d<md) md=d; }
+        const sc=md*0.5-laneBlock(t,cx,cz,px,pu*sg)*1.6-(rot?0.35:0)-(Math.hypot(px-cx,pu-cu)<7?3:0);
+        if(sc>bsc){ bsc=sc; bpx=px; bpu=pu; } }
+      let bq=null, bc=1e9;
+      for(const p of out){ if(p===car||taken.has(p)||p.run||(p.fall||0)>0) continue; const sh=SHP[p.code], D=sh.dl==='D';
+        if(key==='F' && (D||p.code==='CDM'||p.code==='LDM'||p.code==='RDM')) continue;
+        if(key==='L' && ((D&&sh.dx<20&&bu>-30)||sh.dl==='S')) continue;
+        if(key==='B' && (sh.dl==='S'||sh.dl==='W'||sh.dl==='A')) continue;
+        const d=Math.hypot(p.pos.x-bpx,p.pos.z*sg-bpu), dh=Math.hypot(p.slot.x0-bpx,p.slot.u0-bpu); if(d>32||dh>28) continue;   // nobody is dragged far out of his position
+        const c=d*(p.supK===key?0.7:1)+dh*0.35; if(c<bc){ bc=c; bq=p; } }
+      if(bq){ taken.add(bq); const S=bq.slot; S.x=bpx; S.u=bpu; S.kind='sup'; S.urg=1; bq.supK=key; } }
+  } else T.press=99;
+  for(const p of out){ if(!taken.has(p)) p.supK=null; }
+  // --- everyone else drifts into the open pocket near his position (re-read a couple of times a second, with memory)
+  for(const p of out){ const S=p.slot; if(S.kind!=='atk') continue;
+    p.spT=(p.spT||0)-dt;
+    if(p.spT<=0){ p.spT=0.4+Math.random()*0.3; spaceShift(p,T,car,cap); }
+    S.x=clampN(S.x+(p.spDx||0),-HALF_W+4,HALF_W-4); S.u=Math.min(S.u+(p.spDu||0), SHP[p.code].dl==='D'?1e9:cap); }
+  // --- runs
+  for(const p of out){ const r=p.run; if(!r) continue; const S=p.slot; r.t-=dt;
+    const ux=r.x, uu=(r.kind==='thru'||r.kind==='go')?Math.min(r.u,cap):r.u;
+    if(r.t<=0 || p===owner || p===passReceiver || Math.hypot(ux-p.pos.x,uu-p.pos.z*sg)<1.3){ p.run=null; continue; }
+    S.x=ux; S.u=uu; S.kind='run'; S.urg=2; }
+  T.runT-=dt;
+  if(T.runT<=0 && owner && owner.team===t && !owner.gk){ T.runT=0.3+Math.random()*0.3; runStart(t,T,owner); }
+}
+// the open pocket around a man's position: away from markers, in a clean lane from the ball, not on top of a team-mate
+function spaceShift(p,T,car,cap){
+  const sg=T.sg, S=p.slot, sh=SHP[p.code], D=sh.dl==='D', hx=S.x0, hu=S.u0, t=p.team;
+  const fx=car?car.pos.x:ball.position.x, fz=car?car.pos.z:ball.position.z;
+  const r1=D?4:6, r2=D?7:11, ox=p.spDx||0, ou=p.spDu||0;
+  let bx=0, bu=0, bsc=-1e9;
+  for(let i=0;i<13;i++){ const ang=(i-1)*Math.PI/3+(i>6?Math.PI/6:0), r=i===0?0:(i<=6?r1:r2);
+    const dx=i?Math.cos(ang)*r:0, du=i?Math.sin(ang)*r*(D?0.5:1):0;
+    const cx=clampN(hx+dx,-HALF_W+4,HALF_W-4), cu=Math.min(clampN(hu+du,-HALF_L+5,HALF_L-6), D?1e9:cap), cz=cu*sg;
+    let md=99, mate=99;
+    for(const o of players){ if(o.sentOff||o===p||o.gk) continue; const d=Math.hypot(o.pos.x-cx,o.pos.z-cz);
+      if(o.team!==t){ if(d<md) md=d; } else { const dd = o===car ? d : Math.hypot(o.slot.x-cx,o.slot.u-cu); if(dd<mate) mate=dd; } }
+    const ll=Math.hypot(cx-fx,cz-fz);
+    const sc=Math.min(md,11)*0.9 - (ll<52?laneBlock(t,fx,fz,cx,cz)*1.5:0) - Math.hypot(dx,du)*0.25 - (mate<8?(8-mate)*0.8:0)
+             - Math.hypot(dx-ox,du-ou)*0.12 + (D?0:du*0.04);
+    if(sc>bsc){ bsc=sc; bx=cx-hx; bu=cu-hu; } }
+  p.spDx=bx; p.spDu=bu;
+}
+// off-the-ball runs: a forward attacks the gap behind the last line; the full-back overlaps his winger
+function runStart(t,T,car){
+  const sg=T.sg, cu=car.pos.z*sg, off=T.off, out=T.out;
+  let active=0; for(const p of out) if(p.run && p.run.kind==='thru') active++;
+  if(active<2 && cu>-45 && (T.press>4 || T.since<2.5) && off<HALF_L-16){
+    let bp=null, bsx=0, bsc=-1e9;
+    for(const p of out){ if(p===car||p.run||(p.runCd||0)>0) continue; const sh=SHP[p.code]; if(sh.dl==='D'||p.code==='CDM'||p.code==='LDM'||p.code==='RDM') continue;
+      const pu=p.pos.z*sg; if(pu<cu-6 || off-pu>18 || off-pu<-1) continue;                 // level with / ahead of the ball and close to the last line
+      const dC=Math.hypot(p.pos.x-car.pos.x,p.pos.z-car.pos.z); if(dC<9||dC>52) continue;
+      for(let k=-2;k<=2;k++){ const x=clampN(p.pos.x+k*6,-HALF_W+8,HALF_W-8);
+        let gap=99; for(const o of players){ if(o.team===t||o.sentOff||o.gk) continue; const ou=o.pos.z*sg; if(ou<off-9) continue; gap=Math.min(gap,Math.abs(o.pos.x-x)+Math.max(0,off-ou)*0.3); }
+        const sc=Math.min(gap,12)-Math.abs(k)*0.9-Math.abs(x)*0.04+(sh.dl==='S'?1.5:sh.dl==='W'?0.8:0)+Math.random()*1.5;
+        if(sc>bsc){ bsc=sc; bp=p; bsx=x; } } }
+    if(bp && bsc>4.5){ bp.run={kind:'thru', x:bsx, u:Math.min(HALF_L-9,off+17), t:2.6}; bp.runCd=4.5+Math.random()*4; return; }
+  }
+  if(Math.abs(car.pos.x)>38 && cu>-15 && SHP[car.code].dl!=='D'){ const fl=Math.sign(car.pos.x);
+    for(const p of out){ const sh=SHP[p.code]; if(p.run||(p.runCd||0)>0||sh.dl!=='D'||sh.dx<20||p.fl!==fl) continue;
+      const pu=p.pos.z*sg, d=Math.hypot(p.pos.x-car.pos.x,p.pos.z-car.pos.z);
+      if(pu<cu-2 && d<30){ p.run={kind:'over', x:fl*(HALF_W-5), u:Math.min(cu+16,HALF_L-14), t:2.8}; p.runCd=8+Math.random()*4; return; } } }
+}
+
 /* ============ update ============ */
 function stepPlayer(p,dt){
   if((p.celebT||0)>0){ p.celebT-=dt; p.vel.set(0,0,0); p.speed=0;     // celebrating / gutted after a penalty
@@ -2703,7 +2825,7 @@ function stepPlayer(p,dt){
   if(p.pk2 && stepPendingKick(p,dt)) return;   // mid pass-swing: ball at his feet until the contact frame
   // movement target
   let desired=new THREE.Vector3();
-  const isCtrl = (p===ctrlPlayer());
+  const isCtrl = (p===ctrlPlayer()) && !autoBlue;
   const chaser0 = nearestToBall(0,true), chaser1 = nearestToBall(1,true);
 
   // sent off (red card) -> walk off the pitch to your side and stay out
@@ -2822,10 +2944,10 @@ function stepPlayer(p,dt){
   }else if(throwTimer>0 && p===setPieceTaker && owner===p){
     // the set-piece taker can't roam and MUST pass to a teammate to restart (no playing it out alone).
     // Nobody takes it until the form-up phase is over, so teammates have time to get into position.
-    if(setPieceForm<=0 && p.team===1 && !setPieceGK && (p.holdT||0)>0.6 && setPieceLabel==='TIRO LIBRE' && spFKnear && !p.fkPassOnly){
+    if(setPieceForm<=0 && isCpu(p) && !setPieceGK && (p.holdT||0)>0.6 && setPieceLabel==='TIRO LIBRE' && spFKnear && !p.fkPassOnly){
       if(Math.random()<0.6) fkShot(p, 0.75+Math.random()*0.25, null); else p.fkPassOnly=true;
     }
-    if(throwTimer>0 && setPieceTaker===p && setPieceForm<=0 && p.team===1 && !setPieceGK && (p.holdT||0)>0.4 && !(setPieceLabel==='TIRO LIBRE' && spFKnear && !p.fkPassOnly)){   // CPU plays once everyone's set
+    if(throwTimer>0 && setPieceTaker===p && setPieceForm<=0 && isCpu(p) && !setPieceGK && (p.holdT||0)>0.4 && !(setPieceLabel==='TIRO LIBRE' && spFKnear && !p.fkPassOnly)){   // CPU plays once everyone's set
       const tgt=(setPieceLabel==='SAQUE DE BANDA'?throwInTarget(p):null) || passTarget(p) || kickoffPassTarget(p);
       if(tgt){ passBall(p,tgt); setPieceTaker=null; }
     }
@@ -2979,39 +3101,7 @@ function stepPlayer(p,dt){
     desired.set(f[0]+ball.position.x*0.2 - p.pos.x, 0, tz - p.pos.z);
     if(desired.lengthSq()<0.3) desired.set(0,0,0);
   }else{
-    const myChaser = p.team===0?chaser0:chaser1;
-    const weHave = (possTeam===p.team);        // SHAPE possession (hysteresis) — not the 1-frame ball owner
-    const base=FORM[p.team][p.roleIdx];
-    // shift formation: push forwards into attack when we have the ball, drop back otherwise
-    const R=roleOf(p);
-    let bx=base[0]+ball.position.x*(R.wide?0.12:0.35);                   // wide men keep the width
-    let bz;
-    const deepFwd=isFwd(p);                                                // the front three run high
-    if(weHave){
-      // attacking: the striker + both wings push on and ONE defender steps up to support the counter,
-      // while the OTHER defender stays home to cover — so the whole team joins in but one stays back
-      const sg=p.team===0?1:-1;
-      const k = R.line==='D' ? (R.wide?0.3:0.18) : R.line==='M' ? 0.3 : 0.12;   // how much he follows the ball up and down
-      bz=sg*(R.atk + (p.team===0 && R.line==='D' && !R.wide ? 0.03 : 0))*HALF_L + ball.position.z*k;   // each role's attacking height
-    }else{
-      // defending: keep the striker up as an outlet, everyone else drops back to defend
-      if(p.roleIdx===STRIKER){
-        bz=(p.team===0?1:-1)*0.12*HALF_L + ball.position.z*0.1;
-      }else{
-        bz=base[1]*0.7 + ball.position.z*0.3;                // recover toward own half
-      }
-    }
-    p.boxRun=false;
-    // a team-mate winger is wide in the final third: attack the box for the cross (9 near post, other winger far post, 10 at the edge)
-    if(weHave && owner && owner.team===p.team && owner!==p && roleOf(owner).cross && Math.abs(owner.pos.x)>BOX_HALF_W-12){
-      const gzA=p.team===0?HALF_L:-HALF_L, sgA=p.team===0?1:-1, side=Math.sign(owner.pos.x)||1;
-      if(Math.abs(owner.pos.z-gzA)<60){ const c=LINEUP[p.team][p.roleIdx];
-        if(c==='ST'){ bz=gzA-sgA*9; bx=side*2.5; }
-        else if(c==='LW'||c==='RW'){ bz=gzA-sgA*15; bx=-side*13; }
-        else if(c==='CAM'||c==='LCM'||c==='RCM'){ bz=gzA-sgA*(BOX_DEPTH+3); bx=-side*4; } p.boxRun=true; } }
-    bz=THREE.MathUtils.clamp(bz,-HALF_L+3,HALF_L-3);
-    // forwards hold the offside line when we attack, except on a rare timed run in behind
-    if(weHave && deepFwd && (p.runGamble||0)<=0) bz=keepOnsideZ(p.team,bz);
+    const S=p.slot, weHave = TAC[p.team] ? TAC[p.team].have : (possTeam===p.team);   // the SHAPE's possession (see TEAM SHAPE), not the 1-frame ball owner
     const myIc=icpt[p.team];
     if(passReceiver===p && passSeekT>0 && owner!==p && throwTimer<=0){
       // a pass is coming to me: get to the spot ON ITS PATH and wait for it, facing the ball (not chasing it)
@@ -3020,9 +3110,10 @@ function stepPlayer(p,dt){
     }else if(myIc && myIc.p===p && !owner && throwTimer<=0 && !(passReceiver && passReceiver.team===p.team)){
       desired.copy(myIc.pt).sub(p.pos).setY(0);          // loose ball / rival pass: the man who gets there first goes for it
     }else if(owner && owner.gk && owner.team!==p.team && inOwnBox(owner)){
-      // the keeper has it in his hands: drop off his area, back toward midfield, and wait for the clearance
-      const gzK=owner.team===0?-HALF_L:HALF_L, minOut=BOX_DEPTH+18, out=Math.abs(p.pos.z-gzK);
-      if(out<minOut){ desired.set(0,0,(gzK<0?1:-1)*(minOut+2-out)); } else desired.set(0,0,0);
+      // the keeper has it in his hands: take up the shape, but nobody waits near his area
+      const gzK=owner.team===0?-HALF_L:HALF_L, minOut=BOX_DEPTH+18; let tz=S.z;
+      if(Math.abs(tz-gzK)<minOut+2) tz=gzK+(gzK<0?1:-1)*(minOut+2);
+      desired.set(S.x-p.pos.x,0,tz-p.pos.z);
     }else if(recvMark[p.team]===p && passReceiver && !owner && throwTimer<=0){
       const ogz=p.team===0?-HALF_L:HALF_L, r=passReceiver.pos;            // close the receiver down, goal-side
       const gs=new THREE.Vector3(0,0,ogz).sub(r).setY(0).setLength(2.6);
@@ -3087,83 +3178,25 @@ function stepPlayer(p,dt){
       // (the rival decides below, by scoring every option)
       // pressure: nearest opponent distance -> pass sooner when closed down (one-touch feel)
       let opD=99; players.forEach(o=>{if(o.team!==p.team&&!o.gk&&!o.sentOff)opD=Math.min(opD,o.pos.distanceTo(p.pos));});
-      // in the attacking third with space, the CPU carries the ball in to make a chance instead of passing straight away
-      const inAttack = p.team===1 && ball.position.z < -HALF_L+68;
-      const hold=(p.holdT||0), need = inAttack ? (redCombo<3 ? (opD<3.2?0.25:0.4) : (opD<2.4?0.3:1.2)) : (opD<3.6 ? 0.2 : 0.55);   // keep it moving in midfield, tiki-taka near the box, then drive at goal
-      const wingRun = p.team===1 && roleOf(p).cross && Math.abs(p.pos.x)>BOX_HALF_W-10 && ball.position.z < -HALF_L+80 && opD>2.4;   // a winger in space: run it down the line to cross
-      const need2 = wingRun ? 2.2 : need;   // quick one-touch combinations in the final third
-      // only the CPU (red) auto-passes; your blue players never kick on their own — you decide
-      if(p.team===1) acted=cpuDecide(p, opD, inAttack, wingRun);           // the rival weighs shoot / cross / through ball / pass / long ball / carry
+      const cpu=isCpu(p), toGL=HALF_L-ball.position.z*(p.team===0?1:-1);       // toGL: how far the ball is from the goal he attacks
+      const wingRun = cpu && roleOf(p).cross && Math.abs(p.pos.x)>BOX_HALF_W-10 && toGL<80 && opD>2.4;   // a winger in space: run it down the line to cross
+      // only the CPU plays by itself; your blue players never kick on their own — you decide
+      if(cpu) acted=cpuDecide(p, opD, wingRun, dt);
       if(acted) desired.set(0,0,0);
-      else if(p.team===1 && roleOf(p).cross && Math.abs(p.pos.x)>BOX_HALF_W-10){ const wx=Math.sign(p.pos.x)*(BOX_HALF_W+3); desired.set(wx-p.pos.x,0,(gz-(p.team===0?8:-8))-p.pos.z); }   // winger: down the wing to the byline
-      else if(p.carryP && Math.abs(p.pos.z-gz)>BOX_DEPTH+4) desired.copy(p.carryP.dir).multiplyScalar(10);   // into the space, away from the pressure
+      else if(p.carryP && (Math.abs(p.pos.z-gz)>BOX_DEPTH+4 || Math.abs(p.pos.x)>BOX_HALF_W-10)) desired.copy(p.carryP.dir).multiplyScalar(10);   // into the space, away from the pressure
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
-    }else if(!weHave){
-      // DEFEND (stable zonal, no oscillation): ONE man presses the ball, ONE stays up as the counter outlet,
-      // and EVERYONE else DROPS into a line goal-side of the ball and marks. Targets depend only on the ball
-      // and on each player's own lane, so the whole team gets back to defend instead of jittering in place.
-      const roles=defRoleCache[p.team]||{};
-      const rank=ballRank(p);
-      const ownGoalZ=p.team===0?-HALF_L:HALF_L;
-      const gdir=p.team===0?1:-1;                          // our attacking direction in z
-      const toOwnGoal=Math.abs(ball.position.z-ownGoalZ);  // how close the ball is to our goal
-      // a defensive line ~8m goal-side of the ball, never past our own goal line
-      const holdEdge = toOwnGoal > BOX_DEPTH+10;            // ball still well out: the line stays just in front of our area
-      const minDepth = holdEdge ? BOX_DEPTH+3 : 5;
-      const lineZ = gdir>0 ? Math.max(ball.position.z-8, ownGoalZ+minDepth)
-                           : Math.min(ball.position.z+8, ownGoalZ-minDepth);
-      if(p===roles.presser){
-        const gs=new THREE.Vector3(0,0,ownGoalZ).sub(ball.position).setY(0); const gl=gs.length()||1;
-        const dB=p.pos.distanceTo(ball.position), ahead=(p.pos.clone().sub(ball.position).setY(0).dot(gs)/gl);   // + = he is goal-side
-        if(dB>4.5 && ahead<1.5){ const pt=ball.position.clone().addScaledVector(gs,2.2/gl); desired.copy(pt).sub(p.pos).setY(0); }   // get goal-side first
-        else desired.copy(ball.position).sub(p.pos).setY(0);    // goal-side (or right on him): go and win it
-      }else if(p===roles.cover){
-        // the deepest man is the LAST line (sweeper): always GOAL-SIDE of the ball, near our goal
-        const sDepth = holdEdge ? (p.team===0?BOX_DEPTH+3:BOX_DEPTH-2) : (p.team===0?12:10);   // the last man also sits higher while play is far away (yours a bit more)
-        const sweepZ = gdir>0 ? Math.min(ownGoalZ+sDepth, ball.position.z-3)
-                              : Math.max(ownGoalZ-sDepth, ball.position.z+3);
-        const sweepX = THREE.MathUtils.clamp(ball.position.x*0.4, -GOAL_W-3, GOAL_W+3);
-        desired.set(sweepX-p.pos.x, 0, sweepZ-p.pos.z);
-      }else if(p===roles.outlet && toOwnGoal>20){
-        desired.set(bx-p.pos.x,0,bz-p.pos.z);              // highest man stays up for the counter (until it's on our box)
-      }else{
-        // drop into the line, keeping your lane (formation side), shading onto a nearby man to mark
-        let tx=base[0]*0.75 + ball.position.x*0.35;
-        let tz=lineZ;
-        const Rd=roleOf(p);
-        if(isMid(p)) tz = gdir>0 ? Math.max(lineZ+Rd.off, ownGoalZ+minDepth+Rd.off*0.6) : Math.min(lineZ-Rd.off, ownGoalZ-minDepth-Rd.off*0.6);   // midfield screen (DMs deeper, the 10 higher)
-        else if(isFwd(p)){ tz = lineZ + gdir*Rd.off; if(Rd.wide) tx = base[0]*0.9 + ball.position.x*0.15; }                        // wingers track back wide, the 9 waits higher
-        else tz = gdir>0 ? Math.max(lineZ-4, ownGoalZ+minDepth-2) : Math.min(lineZ+4, ownGoalZ-minDepth+2);              // the back four
-        const m=pickMark(p);
-        if(m && Math.abs(m.pos.x-tx)<10 && !isFwd(p)){
-          tx=m.pos.x;
-          tz = gdir>0 ? Math.min(lineZ, m.pos.z-2) : Math.max(lineZ, m.pos.z+2);  // mark goal-side, but never ahead of the line
-        }
-        desired.set(tx-p.pos.x,0,tz-p.pos.z);
-        if(toOwnGoal<16 && rank<=1) desired.copy(ball.position).sub(p.pos).setY(0);  // a man right on the ball in our box
-      }
-      // cpu slide-tackles the human carrier when pressing and close
-      if(p.team===1 && p.slideCd<=0 && owner && owner.team===0 && rank<=1 && !((p.beatT||0)>0) && !((owner.spinT||0)>0 && Math.random()<0.7)
-         && p.pos.distanceTo(owner.pos)<4.6 && Math.random()<dt*2.8*roleOf(p).slide){
-        p.slide=0.78; p.slideMax=0.78; p.slideCd=1.9;
-      }
-    }else if(weHave && !p.gk){
-      // off the ball on our team: offer a passing option in space (support run)
-      let bxx=bx, bzz=bz;
-      if(owner && owner.team===p.team && owner!==p && !p.boxRun && !(deepFwd && (p.runGamble||0)>0)){
-        let rk=0; const dme=p.pos.distanceTo(owner.pos);
-        players.forEach(q=>{ if(q.team===p.team&&q!==p&&q!==owner&&!q.gk&&!q.sentOff && q.pos.distanceTo(owner.pos)<dme) rk++; });
-        if(rk<2 && dme<34){ const sgS=p.team===0?1:-1, side=(p.pos.x>=owner.pos.x?1:-1);
-          bx=THREE.MathUtils.clamp(owner.pos.x+side*11,-HALF_W+4,HALF_W-4); bz=THREE.MathUtils.clamp(owner.pos.z+sgS*(rk===0?7:-3),-HALF_L+5,HALF_L-5);
-          bxx=bx; bzz=bz; } }
-      // SPACE MAP: every ~half a second pick the open pocket around his position (re-evaluated, so he keeps moving into space)
-      if(!p.boxRun){ p.spaceT=(p.spaceT||0)-dt;
-        if(p.spaceT<=0 || !p.spaceSpot){ p.spaceSpot=findSpace(p,bx,bz); p.spaceT=0.45+Math.random()*0.35; }
-        if(p.spaceSpot){ bxx=p.spaceSpot.x; bzz=p.spaceSpot.z; } }
-      if(deepFwd && (p.runGamble||0)<=0) bzz=keepOnsideZ(p.team,bzz);  // stay onside while supporting
-      desired.set(bxx-p.pos.x,0,bzz-p.pos.z);
     }else{
-      desired.set(bx-p.pos.x,0,bz-p.pos.z);
+      // off the ball: his place in the team's shape (see TEAM SHAPE) — pressing, covering, marking, supporting or making a run
+      desired.set(S.x-p.pos.x,0,S.z-p.pos.z);
+      if(!weHave){
+        const ownGoalZ=p.team===0?-HALF_L:HALF_L;
+        if(Math.abs(ball.position.z-ownGoalZ)<16 && ballRank(p)<=1) desired.copy(ball.position).sub(p.pos).setY(0);   // a ball loose right in front of our goal: the two nearest just go and get it
+        // the CPU goes to ground only when it has to: the carrier is getting away from him, or is about to shoot
+        if(cpuTackler(p) && p.slideCd<=0 && owner && owner.team!==p.team && !owner.gk && S.kind==='press' && !((p.beatT||0)>0) && !((owner.spinT||0)>0 && Math.random()<0.7)){
+          const dO=p.pos.distanceTo(owner.pos);
+          if(dO<4.6){ const sgp=p.team===0?1:-1, behind=(p.pos.z-owner.pos.z)*sgp>0.5, danger=Math.abs(owner.pos.z-ownGoalZ)<BOX_DEPTH+16 && Math.abs(owner.pos.x)<BOX_HALF_W+6;
+            if(Math.random()<dt*(behind?1.5:danger?1.0:0.22)*roleOf(p).slide){ p.slide=0.78; p.slideMax=0.78; p.slideCd=1.9; } } }
+      }
     }
     // PRESIÓN: pulls only the two nearest blue defenders onto the ball, the rest keep their shape
     if(p.team===0 && pressTimer>0 && !weHave && ballRank(p)<=1){
@@ -3179,8 +3212,8 @@ function stepPlayer(p,dt){
   if(p.gk && p.gkReact) spd=Math.max(spd,25);    // keeper springs across to cover a shot / sweep (faster)
   if((p.dive||0)>0){ const fly=!p.gkClip || (p.dive<=p.gkFlyFrom && p.dive>=p.gkFlyTo); if(fly) spd=Math.max(spd,p.gkClip?p.gkLunge:34); }   // keeper dive lunge
   if(isCtrl && pressTimer>0) spd=Math.max(spd,18);   // press charge
-  const redDefend = p.team===1 && !p.gk && owner && owner.team===0 && ballRank(p)<=1;
-  if(owner===p && p.team===1) spd=Math.max(spd,15.0);  // red drives at you with the ball
+  const redDefend = cpuTackler(p) && !p.gk && owner && owner.team!==p.team && ballRank(p)<=1;
+  if(owner===p && isCpu(p)) spd=Math.max(spd,15.0);  // red drives at you with the ball
   if(owner===p && isCtrl) spd=sprint?21.0:16.0;         // YOU run quicker with the ball at your feet
   if(redDefend) spd=Math.max(spd,16.6);                // red hustles hard to win it back
   // a defender caught UPFIELD of the ball sprints back to recover goal-side (both teams) — so they get back to defend
@@ -3197,9 +3230,12 @@ function stepPlayer(p,dt){
   // in open play too: a man walking into his SHAPE position eases in and settles instead of overshooting and
   // turning back every frame (that back-and-forth was the 'hitching'); anyone chasing the ball keeps full pace
   if(!isCtrl && !p.gk && throwTimer<=0 && owner!==p && passReceiver!==p && !(icpt[p.team]&&icpt[p.team].p===p) && recvMark[p.team]!==p
-     && !(defRoleCache[p.team] && defRoleCache[p.team].presser===p) && !(pressTimer>0 && p.team===0)){
-    const dl=p._dRaw;
-    if(dl<0.25) desired.set(0,0,0); else spd=Math.min(spd, dl*1.7); }   // speed in proportion to the gap: he tracks his spot smoothly (no overshoot, no stop-start)
+     && p.slot.kind!=='press' && !(pressTimer>0 && p.team===0)){
+    const dl=p._dRaw, ug=p.slot.urg|0;
+    if(dl<0.25) desired.set(0,0,0);
+    else if(ug>=2) spd=Math.min(spd*1.04, 2+dl*2.2);                    // a run / closing down: flat out until the last couple of metres
+    else if(ug===1) spd=Math.min(spd, 2.5+dl*1.3);
+    else spd=Math.min(spd, 2+dl*1.0); }                                  // keeping the shape: walk the short bits, jog the middle ones, run when it is far
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
     if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
@@ -3213,7 +3249,7 @@ function stepPlayer(p,dt){
     else { p.stopClip = right ? 'pk:Run_To_Stop' : 'pk:Run_To_Stop_1'; p.stopSt=0; p.stopTs=THREE.MathUtils.clamp(p.speed/8,1.1,1.6); p.stopT=0.8/p.stopTs; }
     p.stopCd=1.4; }
   if((p.stopT||0)>0 && rawDes.lengthSq()>1.5 && spd>3) p.stopT=0;     // off again: no waiting for the clip
-  if(!isCtrl && !p.gk && !(p.slide>0)){ if(!p.dSm) p.dSm=desired.clone(); else if(desired.lengthSq()<1e-6 || owner===p) p.dSm.copy(desired); else p.dSm.lerp(desired, Math.min(1,dt*7)); desired.copy(p.dSm); }   // smoothed steering, but a STOP is a stop
+  if(!isCtrl && !p.gk && !(p.slide>0)){ if(!p.dSm) p.dSm=desired.clone(); else if(desired.lengthSq()<1e-6) p.dSm.copy(desired); else p.dSm.lerp(desired, Math.min(1,dt*(owner===p?9:7))); desired.copy(p.dSm); }   // smoothed steering, but a STOP is a stop
   if(desired.lengthSq()>0.001){
     desired.normalize();
     // while a pass/kick facing is locked, DON'T rotate toward movement (keeps the strike pointing where the ball goes)
@@ -3279,13 +3315,7 @@ function stepPlayer(p,dt){
   if((p.gkKickT||0)>0){ p.gkKickT-=dt; if(!p.gkKicked && owner!==p) p.gkKickT=0; }   // lost it before the kick: abort
   if((p.throwAnim||0)>0)p.throwAnim-=dt;
   if((p.stealCd||0)>0)p.stealCd-=dt;
-  // rarely a forward gambles a run beyond the defence (random, not exaggerated)
-  if((p.runGamble||0)>0) p.runGamble-=dt;
-  else if(!p.gk){
-    // forwards time runs in behind; the CPU's attackers gamble a little more often to make chances
-    const Rg=roleOf(p); const rate = isFwd(p) ? (p.team===1?dt*0.16:dt*0.07) : (Rg===ROLE.CAM||Rg===ROLE.LCM||Rg===ROLE.RCM) ? dt*0.05 : (Rg.wide?dt*0.035:0);   // forwards run in behind; 8s and the 10 arrive late; full-backs overlap
-    if(Math.random()<rate) p.runGamble=1.0;
-  }
+  if((p.runCd||0)>0) p.runCd-=dt; if((p.gotT||0)>0) p.gotT-=dt;
   if(owner===p && !isCtrl) p.holdT=(p.holdT||0)+dt; else { p.holdT=0; p.longRoll=undefined; }  // AI possession timer
 
   // apply to mesh + drive the 3D model's animations from the player's state
@@ -3370,7 +3400,7 @@ function playerBallInteraction(dt){
     let near=null,nd=1e9;
     players.forEach(p=>{if(p.sentOff||(p.kickCd||0)>0.6)return; const d=p.pos.distanceTo(ball.position);if(d<nd){nd=d;near=p;}});
     // slide steal / possession
-    if(near && nd<POSSESS && !(kickT>0 && nd>1.0)){
+    if(near && nd<POSSESS && !(kickT>0 && nd>1.0) && (near===owner || ballVel.length()<26 || ball.position.y>1.5)){   // (a ball flying past isn't his just because it is near: he has to trap it)
       owner=near;
     }else if(nd>POSSESS+1.2){
       owner=null;
@@ -3400,6 +3430,9 @@ function playerBallInteraction(dt){
     if(owner.team===possConfirmTeam) possConfirmT+=dt; else { possConfirmTeam=owner.team; possConfirmT=0; }
     if(possConfirmT>=0.15) possTeam=owner.team;
   }  // loose ball: keep the last confirmed possession (so we stay organised while it's scrambled)
+  { const h = owner ? owner.team : ((passReceiver && passSeekT>0) ? passReceiver.team : -1);
+    if(h>=0){ ctlT[h]+=dt; if(ctlT[h]>0.2) ctlT[1-h]=0; looseT=0; }
+    else { looseT+=dt; if(looseT>0.6){ ctlT[0]=0; ctlT[1]=0; } } }
 
   // keeper has the ball IN HIS AREA: hold it UP in his hands (not on the grass), reaching the way he dived —
   // so a save looks like a catch with the hands. Outside the box he can't handle it, so it drops to his feet.
@@ -3443,7 +3476,7 @@ function playerBallInteraction(dt){
     const want=owner.pos.clone().addScaledVector(fw,owner.pk2.fwd).addScaledVector(lf,(owner.pk2.foot==='L'?1:-1)*owner.pk2.lat); want.y=BALL_R;
     ball.position.lerp(want,Math.min(1,dt*16)); ballVel.set(0,0,0); return;   // right where the kicking boot will meet it
   }
-  if(owner && owner!==comboOwner){ redCombo = (owner.team===1 && comboOwner && comboOwner.team===1) ? redCombo+1 : (owner.team===1?0:-1); comboOwner=owner; }
+  if(owner && owner!==comboOwner){ const t=owner.team; combo[t] = (comboOwner && comboOwner.team===t) ? combo[t]+1 : 0; combo[1-t]=-1; redCombo=combo[1]; comboOwner=owner; }
   if(owner!==ownerPrev){ ownerPrev=owner; ownerT=0; } else ownerT+=dt;
   // dribble: carry the ball in close control just in front of the owner's feet
   if(owner && ball.position.y<0.9 && ballVel.length()<17){
@@ -3653,7 +3686,7 @@ function doGoal(team){
 let foulSpot=new THREE.Vector3();
 let bookee=null;                      // the player being booked (the one who committed the foul)
 function sendOff(s){
-  s.redPending=false; s.sentOff=true; if(owner===s) owner=null;
+  s.redPending=false; s.sentOff=true; if(owner===s) owner=null; assignRoles();
   assignRoles();                                        // team reshuffles to cover the man down
   if(s.team===0 && s===ctrlPlayer()){ const n=nearestToBall(0,true); if(n) ctrl=players.indexOf(n); }
 }
@@ -3885,7 +3918,7 @@ function simFrame(rdt, lastSub){
           const o=owner;
           if(o && o===setPieceTaker){
             if(setPieceGK){ gkPass(o); }             // keeper plays out a goal kick (a pass to a mate)
-            else if(o.team===1){                     // CPU: if it hasn't passed yet, pass to a teammate now
+            else if(isCpu(o)){                       // CPU: if it hasn't passed yet, pass to a teammate now
               const tgt=passTarget(o) || kickoffPassTarget(o);
               if(tgt) passBall(o,tgt);
             }
@@ -3894,8 +3927,8 @@ function simFrame(rdt, lastSub){
           setPieceTaker=null;                                       // window over
         }
       }
-      computeDefRoles();                 // assign press/cover/outlet by current positions (rotates each frame)
       computeIntercepts();               // where the loose ball / pass is going, and who gets there first
+      tacUpdate(dt);                     // every outfielder's place in his team's shape
       players.forEach(p=>stepPlayer(p,dt));
       aerialCheck();                     // high ball reaching a player -> header (shot/pass/clear) or chilena
       separatePlayers();
