@@ -668,6 +668,24 @@ function switchClip(p, name, once, ts, startAt, fade){
     p.curAnim=name;
   } else { to.timeScale=ts||1; }
 }
+// JOG: the running clip with a shorter stride — it is blended toward the standing pose (weight = how much of the full
+// stride), so a man can move at any pace between a walk and a run with his legs turning over at a normal rhythm
+function jogBlend(p, stride, dt, off){
+  const idle=p.act[p.idleClip||'idle'], run=p.act[p.curAnim];
+  if(!idle) return;
+  if(off){                                                       // not running any more: let the standing part go
+    p.jogIn=false;
+    if(p.jogOn){ p.jogW=1; p.jogOn=false; if(p.curAnim!==(p.idleClip||'idle')){ idle.weight=Math.max(0,idle.weight-dt*6); if(idle.weight>0.01) p.jogOn=true; else idle.weight=1, idle.enabled=false; } }
+    return; }
+  if(!run || run===idle) return;
+  if(p.jogW===undefined) p.jogW=1;
+  if(!p.jogIn || p.jogRun!==p.curAnim){ p.jogIn=true; p.jogRun=p.curAnim; p.jogHold=0.24; p.jogW=1; }   // a fresh run: let the cross-fade into it finish first
+  if((p.jogHold=(p.jogHold||0)-dt)>0){ return; }
+  p.jogW+=(stride-p.jogW)*Math.min(1,dt*5);
+  run.weight=p.jogW;
+  if(p.jogW<0.985){ if(!idle.isRunning()){ idle.reset(); idle.play(); } idle.enabled=true; idle.weight=1-p.jogW; p.jogOn=true; }
+  else if(p.jogOn){ idle.weight=1; idle.enabled=false; p.jogOn=false; run.weight=1; }
+}
 // Walking / Running are in-place clips, so the leg cadence (timeScale) is matched to ground speed
 // to stop the feet sliding — faster movement = faster steps, and a near-stop barely shuffles.
 function driveAnim(p, state, speed, dt){
@@ -681,7 +699,10 @@ function driveAnim(p, state, speed, dt){
       if(!RUNS.includes(p.runBase)) p.runBase=RUNS[Math.random()<0.5?0:1];
       if((p.runSwapT=(p.runSwapT||6+Math.random()*6)-dt)<=0){ if(!RUNS.includes(p.curAnim)) p.runBase=RUNS[Math.random()<0.5?0:1]; p.runSwapT=6+Math.random()*6; }
       const nat=13.2/1.12;                                  // measured natural speed, a touch livelier cadence
-      switchClip(p,p.runBase,false,THREE.MathUtils.clamp(speed/nat*(p.cadK||1),0.7,2.1)); }
+      // below running pace it is a JOG: the same clip at a steady cadence with a shorter stride (see jogBlend) — never a slowed-down run
+      const stride=THREE.MathUtils.clamp(speed/(nat*0.9),0.45,1);
+      switchClip(p,p.runBase,false, stride<1 ? 0.9*(p.cadK||1) : THREE.MathUtils.clamp(speed/nat*(p.cadK||1),0.9,2.1));
+      jogBlend(p, stride, dt); }
   }
   else if(state==='walk') switchClip(p,'walk',false, THREE.MathUtils.clamp(speed/3.3*(p.cadK||1),0.5,1.7));
   else if(state==='idle') switchClip(p,p.idleClip||'idle',false, 1);
@@ -716,6 +737,7 @@ function driveAnim(p, state, speed, dt){
   else if(state==='protest')switchClip(p,'protest',false, 1.1);        // arms-out "¡¿qué?!" at the ref
   else if(state==='anger')  switchClip(p,'anger',false, 1.1);          // annoyed / stomping
   else if(p.act[state]) switchClip(p,state,false,1.0);                  // celebrations / reactions by name
+  if(state!=='run' && state!=='dribble') jogBlend(p, 1, dt, true);
   p.mixer.update(dt);
   if(state==='run'||state==='dribble'||state==='walk') footLock(p,speed,dt); else { p.cfPrev=null; }
   // lean into the run (more at full pace), on top of the clip — a runner, not a jogger
@@ -1102,7 +1124,7 @@ function planBall(p, q, mode, from, aimOv, swingT, firm){
   const lead=(q.vel||_zv).clone().setY(0), d0 = aimOv ? Math.hypot(aimOv.x-from.x,aimOv.z-from.z) : Math.hypot(q.pos.x-from.x,q.pos.z-from.z);
   let T, aim, v, w, endT;
   if(mode==='ground'){
-    const va = aimOv ? 8 : THREE.MathUtils.clamp(11+d0*0.22,12,24)*(firm||1), r0=rollTo(groundV0c(d0,va),d0); T=r0?r0.t:1.4;   // into space: it dies as he runs onto it
+    const va = aimOv ? 8.5 : THREE.MathUtils.clamp(11+d0*0.22,12,24)*(firm||1.12), r0=rollTo(groundV0c(d0,va),d0); T=r0?r0.t:1.4;   // into space: it dies as he runs onto it
     aim = aimOv ? aimOv.clone().setY(0) : q.pos.clone().addScaledVector(lead,Math.min(T,1.2)*0.6).setY(0);
     const dd=Math.max(2,Math.hypot(aim.x-from.x,aim.z-from.z)), v0=Math.min(118,groundV0c(dd,va)), ux=(aim.x-from.x)/dd, uz=(aim.z-from.z)/dd;
     v=new THREE.Vector3(ux*v0,0.15,uz*v0); w=new THREE.Vector3(uz*v0/BALL_R,0,-ux*v0/BALL_R); const r1=rollTo(v0,dd); endT=r1?r1.t:T;
@@ -2076,16 +2098,17 @@ function queueKick(p, dir, release, kind, quick){
   const name = shot ? (foot==='L' ? (Math.random()<0.5?'pk:Soccer_Penalty_Kick_1':'pk:Soccer_Penalty_Kick_3') : (Math.random()<0.5?'pk:Soccer_Penalty_Kick':'pk:Soccer_Penalty_Kick_2'))
                     : (foot==='L'?'pk:Soccer_Pass_1':'pk:Soccer_Pass');
   const m=GK[name.slice(3)].m, W=shot?0.24:(quick?0.11:PK_W), ts=shot?1.35:PK_TS;
-  if(dir.lengthSq()>0.01){ p.heading=Math.atan2(dir.x,dir.z); p.faceLock=0.8; }
+  const kH = dir.lengthSq()>0.01 ? Math.atan2(dir.x,dir.z) : p.heading; p.faceLock=0.8;
   const st=Math.max(0,(m.kick||0.45)-W*ts);
-  p.pk2={t:W, W, st, ts, release, foot, name, fwd: shot?0.95:0.55, lat: shot?0.62:0.32}; owner=p; pendingKicker=p; p.kickClip=name; p.kickClipTs=ts;
+  p.pk2={t:W, W, st, ts, release, foot, name, h:kH, fwd: shot?0.95:0.55, lat: shot?0.62:0.32}; owner=p; pendingKicker=p; p.kickClip=name; p.kickClipTs=ts;
   playGk(p,name,ts,st);            // the clip's CONTACT frame lands exactly on the release
 }
 function stepPendingKick(p,dt){
   const k=p.pk2; k.t-=dt;
   if(owner!==p || deadTimer>0 || (p.fall||0)>0 || p.sentOff){ p.pk2=null; if(pendingKicker===p) pendingKicker=null; return false; }   // lost it mid-swing
+  { let dh=k.h-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832; p.heading += k.t>0 ? dh*Math.min(1,dt*26) : dh; }   // he turns into it through the swing
   if(k.t>0){
-    p.vel.multiplyScalar(Math.pow(0.03,dt)); p.pos.addScaledVector(p.vel,dt); p.speed=p.vel.length();
+    p.vel.multiplyScalar(Math.pow(0.12,dt)); p.pos.addScaledVector(p.vel,dt); p.speed=p.vel.length();
     const m=p.mesh; m.position.set(p.pos.x,FOOT_LIFT,p.pos.z); m.rotation.set(0,p.heading+MODEL_YAW,0);
     holdClip(p,k.name,k.st+(k.W-k.t)*k.ts,dt); m.userData.ring.visible=(p===ctrlPlayer());
     if(p.slideCd>0)p.slideCd-=dt;
@@ -2645,7 +2668,10 @@ function tacUpdate(dt){
     T.rivHi=hi;                             // the rival standing closest to OUR goal
     T.out=players.filter(q=>q.team===t&&!q.gk&&!q.sentOff);
     if(have) tacAttack(t,T,dt); else tacDefend(t,T,dt);
-    for(const p of T.out){ const S=p.slot; S.x=clampN(S.x,-HALF_W+3,HALF_W-3); S.u=clampN(S.u,-HALF_L+3,HALF_L-3); S.z=S.u*sg; }
+    for(const p of T.out){ const S=p.slot; S.x=clampN(S.x,-HALF_W+3,HALF_W-3); S.u=clampN(S.u,-HALF_L+3,HALF_L-3); S.z=S.u*sg;
+      if(S.px===undefined || S.kind!==S.pk){ S.px=S.x; S.pz=S.z; }                    // (a new job: no speed read off the jump)
+      const kv=Math.min(1,dt*2.2); S.vx=(S.vx||0)+(THREE.MathUtils.clamp((S.x-S.px)/dt,-12,12)-(S.vx||0))*kv; S.vz=(S.vz||0)+(THREE.MathUtils.clamp((S.z-S.pz)/dt,-12,12)-(S.vz||0))*kv;
+      S.px=S.x; S.pz=S.z; S.pk=S.kind; }
   }
 }
 function tacDefend(t,T,dt){
@@ -2716,6 +2742,7 @@ function tacDefend(t,T,dt){
         else if(-o.vel.z*sg>7 && ou>ld-10) u=ou-1.5; }                                 // a runner going in behind: go with him
       S.u = S.kind==='cover' ? Math.min(S.u,u) : u; }
     else { S.x+=(ox-S.x)*0.55+(bX-S.x)*0.06; S.u=clampN(ou-2, ld+5, S.u+3); }          // goal-side of him and a touch toward the ball (in the passing lane)
+    { const dx=S.x-ox; if(Math.abs(dx)<3.8) S.u=Math.min(S.u, ou-Math.sqrt(3.8*3.8-dx*dx)); }      // a body's width off him (never leaning on his man)
     if(S.urg<1 && Math.hypot(S.x-p.pos.x,S.u-p.pos.z*sg)>7) S.urg=1; }
 }
 function tacAttack(t,T,dt){
@@ -2845,7 +2872,7 @@ function stepPlayer(p,dt){
   if(p.fkK && stepFkKick(p,dt)) return;       // direct free-kick run-up and strike
   if(p.pk2 && stepPendingKick(p,dt)) return;   // mid pass-swing: ball at his feet until the contact frame
   // movement target
-  let desired=new THREE.Vector3();
+  let desired=new THREE.Vector3(); p.useSV=false;
   const isCtrl = (p===ctrlPlayer()) && !autoBlue;
   const chaser0 = nearestToBall(0,true), chaser1 = nearestToBall(1,true);
 
@@ -3137,7 +3164,7 @@ function stepPlayer(p,dt){
       desired.set(S.x-p.pos.x,0,tz-p.pos.z);
     }else if(recvMark[p.team]===p && passReceiver && !owner && throwTimer<=0){
       const ogz=p.team===0?-HALF_L:HALF_L, r=passReceiver.pos;            // close the receiver down, goal-side
-      const gs=new THREE.Vector3(0,0,ogz).sub(r).setY(0).setLength(2.6);
+      const gs=new THREE.Vector3(0,0,ogz).sub(r).setY(0).setLength(3.8);
       desired.set(r.x+gs.x-p.pos.x,0,r.z+gs.z-p.pos.z);
     }else if(throwTimer>0){
       // restart: both sides take up their normal shapes round the ball (the side taking it opens up and shows for it, the
@@ -3185,7 +3212,7 @@ function stepPlayer(p,dt){
       else desired.set(THREE.MathUtils.clamp(ball.position.x,-GOAL_W,GOAL_W)-p.pos.x,0,gz-p.pos.z);
     }else{
       // off the ball: his place in the team's shape (see TEAM SHAPE) — pressing, covering, marking, supporting or making a run
-      desired.set(S.x-p.pos.x,0,S.z-p.pos.z);
+      desired.set(S.x-p.pos.x,0,S.z-p.pos.z); p.useSV=true;
       if(!weHave){
         const ownGoalZ=p.team===0?-HALF_L:HALF_L;
         if(Math.abs(ball.position.z-ownGoalZ)<16 && ballRank(p)<=1) desired.copy(ball.position).sub(p.pos).setY(0);   // a ball loose right in front of our goal: the two nearest just go and get it
@@ -3212,11 +3239,11 @@ function stepPlayer(p,dt){
   if((p.dive||0)>0){ const fly=!p.gkClip || (p.dive<=p.gkFlyFrom && p.dive>=p.gkFlyTo); if(fly) spd=Math.max(spd,p.gkClip?p.gkLunge:34); }   // keeper dive lunge
   if(isCtrl && pressTimer>0) spd=Math.max(spd,18);   // press charge
   const redDefend = cpuTackler(p) && !p.gk && owner && owner.team!==p.team && ballRank(p)<=1;
-  if(owner===p && isCpu(p)) spd = ((p.opD||0)>15 && ball.position.z*(p.team===0?1:-1)<10) ? 11.5 : Math.max(spd,15.0);  // brings it out calmly with nobody near; drives at you otherwise
+  if(owner===p && isCpu(p)) spd=Math.max(spd,15.0);  // red drives at you with the ball
   if(owner===p && isCtrl) spd=sprint?21.0:16.0;         // YOU run quicker with the ball at your feet
   if(redDefend) spd=Math.max(spd,16.6);                // red hustles hard to win it back
   if(!isCtrl && !p.gk && p.slot.kind==='press' && owner && owner.team!==p.team){ const dO=p.pos.distanceTo(owner.pos);
-    if(dO<6) spd=Math.min(spd, Math.max(owner.speed+2.5, 7.5+dO*1.1)); }
+    if(dO<6) spd=Math.min(spd, Math.max(owner.speed+3.5, 11+dO*0.8)); }
   // a defender caught UPFIELD of the ball sprints back to recover goal-side (both teams) — so they get back to defend
   const _gd = p.team===0?1:-1;
   if(!p.gk && possTeam!==p.team && (p.pos.z-ball.position.z)*_gd > 2) spd=Math.max(spd,16.0);
@@ -3227,18 +3254,22 @@ function stepPlayer(p,dt){
   if((p.pkT||0)>0) spd=0;                                   // follow-through after the penalty
   if(p.gk && (p.gkKickT||0)>0) spd = (!p.gkKicked && p.gkKickT>p.gkKickHit) ? p.gkKickRun : 0;   // drop-kick run-up pace, then planted
   p._dRaw=desired.length();
-  if(throwTimer>0 && !p.gk && p!==setPieceTaker && p._dRaw<3.5) spd*=Math.max(0.22,p._dRaw/3.5);   // glide into position, then settle
-  // in open play too: a man walking into his SHAPE position eases in and settles instead of overshooting and
-  // turning back every frame (that back-and-forth was the 'hitching'); anyone chasing the ball keeps full pace
-  if(!isCtrl && !p.gk && throwTimer<=0 && owner!==p && passReceiver!==p && !(icpt[p.team]&&icpt[p.team].p===p) && recvMark[p.team]!==p
+  // PACE of a man going to his place. vGo = the pace he actually moves at (-1: his usual pace)
+  let vGo=-1;
+  const vTop=spd*(0.72+0.12*THREE.MathUtils.clamp((spd-8)/5,0,1));        // his full pace over the grass
+  if(throwTimer>0 && !p.gk && p!==setPieceTaker && !isCtrl){ const dl=p._dRaw;
+    vGo = dl<0.4 ? 0 : Math.min(vTop, 1.6+dl*2.6); }                       // restart: run to the spot, ease in over the last steps
+  else if(!isCtrl && !p.gk && throwTimer<=0 && owner!==p && passReceiver!==p && !(icpt[p.team]&&icpt[p.team].p===p) && recvMark[p.team]!==p
      && p.slot.kind!=='press' && !(pressTimer>0 && p.team===0)){
-    const dl=p._dRaw, ug=p.slot.urg|0;
-    // settled on his spot: he stays put until it has really moved away (no shuffling after every little drift of the shape)
-    if(dl<0.3) p.rest=true; else if(ug>=2 || dl>(p.slot.mark?0.8:ug>=1?1.0:1.8)) p.rest=false;
+    const dl=p._dRaw, ug=p.slot.urg|0, S=p.slot;
+    const svx=p.useSV?(S.vx||0):0, svz=p.useSV?(S.vz||0):0, sv=Math.hypot(svx,svz);     // how fast his place in the shape is itself moving
+    // settled on his spot (and the spot isn't moving): he stays put until it has really moved away (no shuffling)
+    if(dl<0.3 && sv<0.8) p.rest=true; else if(ug>=2 || sv>1.6 || dl>(S.mark||ug>=1?1.1:1.8)) p.rest=false;
     if(p.rest) desired.set(0,0,0);
-    else if(ug>=2) spd=Math.min(spd*1.04, 2+dl*2.2);                    // a run / closing down: flat out until the last couple of metres
-    else if(ug===1) spd=Math.min(spd, 2.5+dl*1.3);
-    else spd=Math.min(spd, 2+dl*1.0); }                                  // keeping the shape: walk the short bits, jog the middle ones, run when it is far
+    else if(ug>=2) vGo=Math.min(vTop*1.04, 3+dl*2.4);                      // a run: flat out until the last couple of metres
+    else { desired.set(desired.x*1.25+svx, 0, desired.z*1.25+svz);         // he goes WITH his place: its own speed, plus closing the gap
+      vGo=Math.min(deadTimer>0?3.6:vTop, Math.max(desired.length(), 1.5+dl*1.2)); }
+  }
   if(p.gk && !((p.dive||0)>0)){ const dl=desired.length();
     if(!p.gkReact && dl<5) spd=Math.min(spd,6.5);          // positional shuffle: small, set steps (not a sprint into the post)
     if(dl<0.35) desired.set(0,0,0); else if(dl<2.5) spd*=dl/2.5; }
@@ -3262,13 +3293,20 @@ function stepPlayer(p,dt){
       let dh=th-p.heading; while(dh>Math.PI)dh-=6.2832; while(dh<-Math.PI)dh+=6.2832;
       { let rdh=Math.atan2(rawDes.x,rawDes.z)-p.heading; while(rdh>Math.PI)rdh-=6.2832; while(rdh<-Math.PI)rdh+=6.2832;
         if(!p.gk && p.act.turnL && p.speed>8.5 && Math.abs(rdh)>2.0 && rawDes.lengthSq()>4 && (p.turnCd||0)<=0 && !(p.slide>0) && owner!==p && !((p.stopT||0)>0)){ p.turnT=0.5; p.turnCd=2.2; p.turnSide=rdh>0?1:-1; } }   // a sharp turn at pace
-      const turnRate=(p.dive||0)>0?22:((p.turnT||0)>0?19:(isCtrl?15:11));
-      p.heading+=dh*Math.min(1,dt*turnRate);
+      const turnRate=(p.dive||0)>0?22:((p.turnT||0)>0?19:(isCtrl?15:(vGo>=0&&vGo<3.6?7:11)));   // (at a walk he turns calmly: no whipping round for a small step)
+      let step=dh*Math.min(1,dt*turnRate);
+      if(!isCtrl && !p.gk && !((p.turnT||0)>0)){ const mx=dt*((p.kickTrig||0)>0?5:8); step=THREE.MathUtils.clamp(step,-mx,mx); }
+      p.heading+=step;
+      if(!isCtrl && !p.gk && !(p.slide>0) && p.speed>5 && Math.abs(dh)>0.35){ const hx=Math.sin(p.heading), hz=Math.cos(p.heading);   // at pace he runs where he faces while he turns
+        desired.set(desired.x*0.3+hx*0.7, 0, desired.z*0.3+hz*0.7).normalize(); }
     }
     const accel=isCtrl?12:9;                                     // control accelerates a bit snappier
     if((p.turnT||0)>0) spd*=0.5;                                 // he checks his stride through the turn
-    const MOVE_K = ((p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : (0.72 + 0.12*THREE.MathUtils.clamp((spd-8)/5,0,1))) * (koCalm>0 && !isCtrl && owner!==p && passReceiver!==p ? 0.6 : 1);   // calmer pace overall; just after the kick-off everyone eases into the game
-    p.vel.lerp(desired.multiplyScalar(spd*MOVE_K), Math.min(1,dt*accel));
+    const MOVE_K = (p.gk && ((p.dive||0)>0 || p.gkReact)) ? 1 : (0.72 + 0.12*THREE.MathUtils.clamp((spd-8)/5,0,1));   // calmer pace overall
+    let vv = vGo>=0 ? vGo*((p.turnT||0)>0?0.5:1) : spd*MOVE_K;
+    if(koCalm>0 && !isCtrl && !p.gk && owner!==p && passReceiver!==p) vv=Math.min(vv,8.6);     // just after the kick-off everyone eases into the game: at a jog (not in slow motion)
+    if((p.kickTrig||0)>0.12 && owner!==p && !isCtrl && !p.gk) vv=Math.min(vv,4.2);              // following through a pass: he doesn't glide away in the kicking pose
+    p.vel.lerp(desired.multiplyScalar(vv), Math.min(1,dt*accel));
   }else{
     p.vel.multiplyScalar(Math.pow(0.03,dt));                     // smooth deceleration
   }
@@ -3276,7 +3314,7 @@ function stepPlayer(p,dt){
   if((p.turnT||0)>0) p.turnT-=dt; if((p.turnCd||0)>0) p.turnCd-=dt;
   if((p.stopT||0)>0) p.stopT-=dt; if((p.stopCd||0)>0) p.stopCd-=dt; if((p.spinCd||0)>0) p.spinCd-=dt; if((p.beatT||0)>0) p.beatT-=dt;
   { let face=false, fr=9;
-    if(!p.gk && !isCtrl && owner!==p && (p.faceLock||0)<=0 && p.speed<1.0 && p._dRaw<0.6 && !(p.slide>0)){ face=true; fr=3.5; }   // standing on his spot: he turns to watch the ball
+    if(!p.gk && !isCtrl && owner!==p && (p.faceLock||0)<=0 && p.speed<1.0 && (p.rest || p._dRaw<0.6) && !(p.slide>0)){ face=true; fr=3.5; }   // standing on his spot: he turns to watch the ball
     if(p.gk && !((p.dive||0)>0) && !((p.gkKickT||0)>0) && !p.gkThr && (p.faceLock||0)<=0 && !(p.gkReact && p._dRaw>4)) face=true;
     if(!p.gk && passReceiver===p && owner!==p && (p.faceLock||0)<=0 && p._dRaw<2 && ball.position.distanceTo(p.pos)<26){ face=true; fr=9; }
     if(!p.gk && owner!==p && (throwTimer>0||kickoffHold>0) && p._dRaw<0.8 && (p.faceLock||0)<=0){ face=true; fr=9; }
@@ -3345,17 +3383,17 @@ function stepPlayer(p,dt){
   else if((p.kickTrig||0)>0) state='kick';
   else if(owner===p && throwTimer>0 && p===setPieceTaker && setPieceLabel==='SAQUE DE BANDA' && p.act['pk:Throw_In']) state='tinwait';   // ball held in both hands, ready to throw
   else if((p.stopT||0)>0 && p.stopClip && p.act[p.stopClip]) state='stop';       // pulling up from a sprint
-  else if(owner===p && !p.gk && p.speed>3.6 && p.act['pk:Running_1'] && ball.position.y<0.9) state='dribble';   // running WITH the ball
+  else if(owner===p && !p.gk && p.speed>(p.locoState==='run'?3.8:6.0) && p.act['pk:Running_1'] && ball.position.y<0.9){ state='dribble'; p.locoState='run'; }   // running WITH the ball
   else if(p.gk && p.speed>0.7 && p.speed<11 && p.act['gk:Goalkeeper_Sidestep'] && Math.abs(p.vel.x*Math.cos(p.heading)-p.vel.z*Math.sin(p.heading))>p.speed*0.6) state='side';   // shuffling across his goal, facing the play
   else if((p.turnT||0)>0 && p.act.turnL) state = p.turnSide>0 ? 'turnL' : 'turnR';
   else if(p.readyClip && !p.gk && owner!==p && p.speed<1.4 && (throwTimer>0 || kickoffHold>0 || awaitKickoffPass || (owner && owner.gk && owner.team!==p.team))) state='ready';
   else { const prev=p.locoState||'idle';
     let cand;
-    if(p.speed>(prev==='run'?2.4:4.6)) cand='run';                   // wide margins: no flicker around the thresholds
+    if(p.speed>(prev==='run'?3.8:6.0)) cand='run';                   // (below jogging pace it is a walk: a slowed-down run reads as slow motion)
     else if(p.speed>(prev==='idle'?1.0:0.25)) cand='walk';
     else cand='idle';
     p.locoT=(p.locoT||0)+dt;
-    if(cand!==prev && p.locoT<0.4 && !(cand==='run' && p.speed>7)) cand=prev;   // hold each gait a moment (unless he really bursts off)
+    if(cand!==prev && p.locoT<0.6 && !(cand==='run' && p.speed>7.5) && !(prev==='run' && p.speed<3.0)) cand=prev;   // hold each gait a moment (unless he really bursts off / pulls right up)
     if(cand!==prev){ p.locoState=cand; p.locoT=0; }
     state=cand; }
   driveAnim(p, state, p.speed, dt);
@@ -3605,7 +3643,7 @@ function setupThrow(sideSign, zOut){
    two wait on the edge of the area for the second ball and two stay back; the defending side puts a man on the near post,
    one in the six-yard box, a marker goal-side of every man in the box, one on the edge, and leaves the 9 up. */
 function cornerMarkSpot(q){ const a=q.cornerMark, gzD=(q.team===0?-1:1)*HALF_L, gx=-a.pos.x, gzz=gzD-a.pos.z, gl=Math.hypot(gx,gzz)||1;
-  return new THREE.Vector3(a.pos.x+gx/gl*1.8,0,a.pos.z+gzz/gl*1.8); }
+  return new THREE.Vector3(a.pos.x+gx/gl*3.8,0,a.pos.z+gzz/gl*3.8); }
 function setupCorner(team, side){
   const es=team===0?1:-1, gz=es*HALF_L, d=-es;                     // es: the end being attacked; d: the way back up the pitch from that goal line
   const cx=side*(HALF_W-1.0), cz=gz+d*1.0;
